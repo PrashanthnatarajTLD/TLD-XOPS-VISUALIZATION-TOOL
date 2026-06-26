@@ -56,7 +56,7 @@ telemetry-app/
 ## Running the Application
 
 ```bash
-streamlit run app.py
+-M streamlit run telemetry-app\agents\linkfms_fetch_app.py --server.port 8501 
 ```
 
 The application will open in your default browser at `http://localhost:8501`
