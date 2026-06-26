@@ -1,0 +1,991 @@
+"""
+Streamlit application for fetching EV Telemetry and DTC Data from LINKFMS API.
+"""
+
+import io
+import streamlit as st
+import pandas as pd
+import sys
+from pathlib import Path
+from datetime import date, timedelta
+from typing import Optional
+
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from linkfms_api_agent import LinkFMSAPIAgent
+from linkfms_dtc_agent import LinkFMSDTCAgent
+from parameter_extraction_agent import ParameterExtractionAgent
+from visualization_agent import VisualizationAgent
+from kpi_agent_v2 import KPIAgent
+from data_models.telemetry import TelemetryData, TelemetryParameter
+from utils.login_auth import LoginManager
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="LINKFMS Data Fetcher", page_icon="🌐", layout="wide")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INITIALIZE SESSION STATE
+# ─────────────────────────────────────────────────────────────────────────────
+LoginManager.initialize_session()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGIN PAGE
+# ─────────────────────────────────────────────────────────────────────────────
+def show_login_page():
+    """Display the login page."""
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("<h1 style='text-align: center'>🔐 LINKFMS Telemetry Dashboard</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: gray;'>Secure Login</p>", unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Note section
+        st.info(
+            "📝 **Note:** Use the same username and password that you use for LINKFMS platform. "
+            "This dashboard requires valid LINKFMS credentials to access vehicle telemetry data."
+        )
+        
+        st.markdown("---")
+        
+        # Login form
+        st.subheader("Login")
+        
+        username = st.text_input(
+            "Username",
+            placeholder="Enter your LINKFMS username",
+            key="login_username"
+        )
+        
+        password = st.text_input(
+            "Password",
+            type="password",
+            placeholder="Enter your LINKFMS password",
+            key="login_password"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🔓 Login", use_container_width=True, type="primary"):
+                if not username or not password:
+                    st.error("❌ Please enter both username and password")
+                else:
+                    # Verify credentials
+                    if LoginManager.login_user(username, password):
+                        st.success(f"✅ Welcome, {st.session_state.user_info['name']}!")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid username or password. Please try again.")
+        
+        with col2:
+            st.markdown("")
+            st.markdown("")
+            st.markdown("*Secure connection to LINKFMS API*")
+        
+        st.markdown("---")
+        
+        # Footer
+        st.markdown(
+            "<p style='text-align: center; font-size: 12px; color: gray;'>"
+            "🔒 Your credentials are encrypted and not stored. | "
+            "For support, contact: admin@linkfms.com"
+            "</p>",
+            unsafe_allow_html=True
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN APPLICATION
+# ─────────────────────────────────────────────────────────────────────────────
+def show_main_app():
+    """Display the main application."""
+    # Header with user info and logout
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.title("🌐 LINKFMS Data Fetcher & KPI Dashboard")
+    
+    with col3:
+        st.markdown("")
+        st.markdown("")
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.user_info = None
+            st.rerun()
+    
+    # User info
+    st.markdown(f"**👤 Logged in as:** {st.session_state.user_info['name']} ({st.session_state.user_info['role']})")
+    st.markdown("---")
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # SHARED INPUTS
+    # ─────────────────────────────────────────────────────────────────────────────
+    st.subheader("📋 Fetch Parameters")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        plate_number = st.text_input("Vehicle Plate Number", placeholder="e.g., T118059")
+    with col2:
+        start_date = st.date_input("Start Date", value=date.today())
+    with col3:
+        end_date = st.date_input("End Date", value=date.today())
+
+    TIMEZONE_OPTIONS = {
+        "UTC": "UTC",
+        "IST — India (UTC+5:30)": "Asia/Kolkata",
+        "EST — USA Eastern (UTC-5)": "America/New_York",
+        "CST — USA Central (UTC-6)": "America/Chicago",
+        "PST — USA Pacific (UTC-8)": "America/Los_Angeles",
+        "CET — France/Europe (UTC+1)": "Europe/Paris",
+    }
+
+    st.markdown("---")
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # DATA TYPE SELECTION
+    # ─────────────────────────────────────────────────────────────────────────────
+    data_type = st.radio(
+        "Select Data Type to Fetch",
+        options=["📡 Raw Telemetry", "⚠️ DTC (Diagnostic Trouble Codes)", "📊 Visualize", "📈 KPI Dashboard"],
+        horizontal=True
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # TELEMETRY OPTIONS
+    # ─────────────────────────────────────────────────────────────────────────────
+    if data_type == "📡 Raw Telemetry":
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            batch_size_days = st.number_input("Batch Size (days)", min_value=1, max_value=365, value=30)
+        with col2:
+            alignment_method = st.selectbox(
+                "Alignment Method",
+                options=["forward_fill", "backward_fill", "interpolate", "nearest"],
+                index=0
+            )
+        with col3:
+            selected_tz_label = st.selectbox("Display Timezone", options=list(TIMEZONE_OPTIONS.keys()), index=1)
+        selected_tz = TIMEZONE_OPTIONS[selected_tz_label]
+
+        if st.button("📥 Fetch Telemetry Data", type="primary"):
+            if not plate_number:
+                st.error("❌ Please enter a vehicle plate number.")
+            else:
+                try:
+                    # Use credentials from session (authenticated user)
+                    api_agent = LinkFMSAPIAgent(
+                        st.session_state.user_info.get('userid', 'admin'),
+                        'linkfms@2024'  # Password for demo users
+                    )
+                    all_dataframes = []
+                    current_start = start_date
+
+                    with st.spinner("🔄 Fetching telemetry data in batches..."):
+                        while current_start <= end_date:
+                            current_end = min(current_start + timedelta(days=batch_size_days - 1), end_date)
+                            st.info(f"Fetching {plate_number}: {current_start} → {current_end}")
+                            batch = api_agent.fetch_by_date_and_vehicle(
+                                plate_number=plate_number,
+                                start_date=current_start.isoformat(),
+                                end_date=current_end.isoformat()
+                            )
+                            if batch and not batch.dataframe.empty:
+                                all_dataframes.append(batch.dataframe)
+                            current_start = current_end + timedelta(days=1)
+
+                    if not all_dataframes:
+                        st.warning("⚠️ No data found.")
+                    else:
+                        combined_df = pd.concat(all_dataframes, ignore_index=True)
+                        timestamp_col_name = 'timestamp'
+                        if timestamp_col_name in combined_df.columns:
+                            combined_df[timestamp_col_name] = pd.to_datetime(combined_df[timestamp_col_name], errors='coerce', utc=True)
+                            combined_df = combined_df.sort_values(timestamp_col_name).reset_index(drop=True)
+
+                        telemetry_data = TelemetryData(
+                        dataframe=combined_df,
+                        parameters=[TelemetryParameter(name=col) for col in combined_df.columns if col != timestamp_col_name],
+                        timestamp_column=timestamp_col_name,
+                        source_file=f"LINKFMS API - {plate_number}"
+                    )
+
+                    with st.spinner("📊 Extracting parameters..."):
+                        extraction_agent = ParameterExtractionAgent()
+
+                        if 'telemetry_raw' in telemetry_data.dataframe.columns:
+                            sample_str = str(telemetry_data.dataframe['telemetry_raw'].dropna().iloc[0]) if not telemetry_data.dataframe['telemetry_raw'].dropna().empty else ""
+                            with st.expander("🔍 Debug: Raw telemetry sample (first row)"):
+                                st.code(sample_str)
+                                parsed_keys = [p.split(':')[0].strip() for p in sample_str.split(',') if ':' in p]
+                                st.write("**Keys found in raw data:**", parsed_keys)
+
+                        extraction_result = extraction_agent.extract_parameters(
+                            telemetry_data.dataframe, source_column='telemetry_raw'
+                        )
+
+                        raw_api_cols_to_drop = [
+                            'telemetry_raw', 'accuracy', 'gpsProvider', '__typename',
+                            'longitude', 'latitude', 'id', 'plateNumber',
+                            'VehicleEntity Max RPM', 'VehicleEntity Max Idle', 'VehicleEntity Max Speed',
+                            'EV Charger Output Current', 'Veh Ignition', 'Veh Inching',
+                            'EV Battery Cell Temp Min', 'EV Battery Cell Temp Max',
+                            'EV Battery Cell Temp Min (°C)', 'EV Battery Cell Temp Max (°C)',
+                            'OBU Vin State', 'OBU Vin Data Mb/M', 'OBU Internal Temperature (°C)',
+                            'Alrm Harsh Braking', 'Alrm Excessive Acceleration', 'Alrm No Trip Motion',
+                            'VCM Vehicle Access Control State I/O',
+                        ]
+                        extracted_df = extraction_result.dataframe.drop(
+                            columns=[c for c in raw_api_cols_to_drop if c in extraction_result.dataframe.columns],
+                            errors='ignore'
+                        )
+                        extracted_df = extracted_df.loc[:, ~extracted_df.columns.duplicated(keep='first')]
+
+                    with st.spinner(f"⏱ Filling missing values ({alignment_method})..."):
+                        extracted_df = extracted_df.dropna(subset=[timestamp_col_name])
+                        extracted_df = extracted_df.sort_values(timestamp_col_name).reset_index(drop=True)
+                        non_ts_cols = [c for c in extracted_df.columns if c != timestamp_col_name]
+                        if alignment_method == 'forward_fill':
+                            extracted_df[non_ts_cols] = extracted_df[non_ts_cols].ffill()
+                        elif alignment_method == 'backward_fill':
+                            extracted_df[non_ts_cols] = extracted_df[non_ts_cols].bfill()
+                        elif alignment_method in ('interpolate', 'nearest'):
+                            numeric_cols = extracted_df[non_ts_cols].select_dtypes(include='number').columns.tolist()
+                            extracted_df[numeric_cols] = extracted_df[numeric_cols].interpolate(method='linear', limit_direction='both')
+                            extracted_df[non_ts_cols] = extracted_df[non_ts_cols].ffill().bfill()
+                        else:
+                            extracted_df[non_ts_cols] = extracted_df[non_ts_cols].ffill().bfill()
+                        extracted_df[non_ts_cols] = extracted_df[non_ts_cols].ffill().bfill()
+                        display_df = extracted_df.rename(columns={'timestamp': 'dateProcessed'})
+
+                    date_cols = [c for c in ['date', 'dateReceived', 'dateProcessed'] if c in display_df.columns]
+                    for col in date_cols:
+                        display_df[col] = pd.to_datetime(display_df[col], errors='coerce', utc=True).dt.tz_convert(selected_tz).dt.tz_localize(None)
+
+                    st.session_state['display_df'] = display_df
+                    st.session_state['tele_plate'] = plate_number
+                    st.session_state['tele_start'] = start_date
+                    st.session_state['tele_end'] = end_date
+                    st.session_state['tele_tz'] = selected_tz_label
+                    st.success(f"✓ {len(display_df)} records fetched for {plate_number}. Timezone: {selected_tz_label}")
+
+            except Exception as e:
+                st.error(f"An unexpected error occurred: {e}")
+
+    # Persistent preview
+    if 'display_df' in st.session_state:
+        display_df = st.session_state['display_df']
+        st.subheader("Fetched Data Preview")
+        st.dataframe(display_df, use_container_width=True)
+
+        date_col_display = 'dateProcessed' if 'dateProcessed' in display_df.columns else 'timestamp'
+        st.write(f"**Total Records:** {len(display_df)}")
+        st.write(f"**Date Range:** {display_df[date_col_display].min()} to {display_df[date_col_display].max()}")
+        st.write(f"**Memory Usage:** {display_df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
+
+        st.markdown("---")
+        csv_df = display_df.copy().where(display_df.notna(), other="")
+        col_csv, col_excel = st.columns(2)
+        with col_csv:
+            st.download_button(
+                label="💾 Download as CSV",
+                data=csv_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'),
+                file_name=f"telemetry_{st.session_state['tele_plate']}_{st.session_state['tele_start']}_to_{st.session_state['tele_end']}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with col_excel:
+            excel_buf = io.BytesIO()
+            csv_df.to_excel(excel_buf, index=False, engine='openpyxl')
+            excel_buf.seek(0)
+            st.download_button(
+                label="📊 Download as Excel",
+                data=excel_buf,
+                file_name=f"telemetry_{st.session_state['tele_plate']}_{st.session_state['tele_start']}_to_{st.session_state['tele_end']}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DTC SECTION
+# ─────────────────────────────────────────────────────────────────────────────
+elif data_type == "⚠️ DTC (Diagnostic Trouble Codes)":
+    selected_tz_label_dtc = st.selectbox("Display Timezone", options=list(TIMEZONE_OPTIONS.keys()), index=1, key="tz_dtc")
+    selected_tz_dtc = TIMEZONE_OPTIONS[selected_tz_label_dtc]
+
+    if st.button("🔍 Fetch DTC Data", type="primary"):
+        if not linkfms_username or not linkfms_password:
+            st.error("❌ Please enter credentials.")
+        elif not plate_number:
+            st.error("❌ Please enter a vehicle plate number.")
+        else:
+            try:
+                dtc_agent = LinkFMSDTCAgent(linkfms_username, linkfms_password)
+                with st.spinner("🔄 Fetching DTC records..."):
+                    dtc_df = dtc_agent.fetch(
+                        plate_number=plate_number,
+                        start_date=start_date.isoformat(),
+                        end_date=end_date.isoformat()
+                    )
+
+                if dtc_df is not None and not dtc_df.empty:
+                    dtc_df['timestamp'] = dtc_df['timestamp'].dt.tz_convert(selected_tz_dtc).dt.tz_localize(None)
+                    st.session_state['dtc_df'] = dtc_df
+                    st.session_state['dtc_plate'] = plate_number
+                    st.session_state['dtc_start'] = start_date
+                    st.session_state['dtc_end'] = end_date
+                    st.success(f"✓ Fetched {len(dtc_df)} DTC records for {plate_number}.")
+                else:
+                    st.warning("⚠️ No DTC records found.")
+            except Exception as e:
+                st.error(f"An unexpected error occurred: {e}")
+
+    # Persistent DTC preview
+    if 'dtc_df' in st.session_state:
+        dtc_df = st.session_state['dtc_df']
+        st.subheader("DTC Data Preview")
+        st.dataframe(dtc_df, use_container_width=True)
+
+        st.write(f"**Total DTC Records:** {len(dtc_df)}")
+        st.write(f"**Unique Codes:** {dtc_df['code'].nunique()}")
+        st.write(f"**Date Range:** {dtc_df['timestamp'].min()} to {dtc_df['timestamp'].max()}")
+
+        st.markdown("---")
+        dtc_csv_df = dtc_df.copy().where(dtc_df.notna(), other="")
+        col_csv2, col_excel2 = st.columns(2)
+        with col_csv2:
+            st.download_button(
+                label="💾 Download DTC as CSV",
+                data=dtc_csv_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig'),
+                file_name=f"dtc_{st.session_state['dtc_plate']}_{st.session_state['dtc_start']}_to_{st.session_state['dtc_end']}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with col_excel2:
+            dtc_buf = io.BytesIO()
+            dtc_csv_df.to_excel(dtc_buf, index=False, engine='openpyxl')
+            dtc_buf.seek(0)
+            st.download_button(
+                label="📊 Download DTC as Excel",
+                data=dtc_buf,
+                file_name=f"dtc_{st.session_state['dtc_plate']}_{st.session_state['dtc_start']}_to_{st.session_state['dtc_end']}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VISUALIZE SECTION
+# ─────────────────────────────────────────────────────────────────────────────
+elif data_type == "📊 Visualize":
+    viz = VisualizationAgent()
+
+    has_telemetry = 'display_df' in st.session_state
+    has_dtc = 'dtc_df' in st.session_state
+
+    if not has_telemetry and not has_dtc:
+        st.info("ℹ️ Fetch Telemetry or DTC data first, then come here to visualize.")
+    else:
+        viz_section = st.radio(
+            "Visualize",
+            options=(["📡 Telemetry Charts"] if has_telemetry else []) +
+                    (["⚠️ DTC Charts"] if has_dtc else []),
+            horizontal=True
+        )
+
+        # ── TELEMETRY CHARTS ──────────────────────────────────────────────
+        if viz_section == "📡 Telemetry Charts":
+            df = st.session_state['display_df']
+            timestamp_col = 'dateProcessed' if 'dateProcessed' in df.columns else df.columns[0]
+            numeric_cols = df.select_dtypes(include='number').columns.tolist()
+
+            chart_category = st.selectbox("Select Chart Category", [
+                "Key Telemetry Charts",
+                "Statistical & Relationship Charts",
+                "Custom Chart Builder",
+            ])
+
+            if chart_category == "Key Telemetry Charts":
+                chart_type = st.selectbox("Select Chart", [
+                    "SOC & Battery Current (Dual Axis)",
+                    "Temperature Parameters",
+                    "Speed Over Time",
+                    "SOC Daily Min/Max",
+                    "Charging Sessions",
+                    "Custom Time Series",
+                ])
+
+                if chart_type == "SOC & Battery Current (Dual Axis)":
+                    st.plotly_chart(viz.soc_current_dual(df, timestamp_col), use_container_width=True)
+
+                elif chart_type == "Temperature Parameters":
+                    st.plotly_chart(viz.temperature_chart(df, timestamp_col), use_container_width=True)
+
+                elif chart_type == "Speed Over Time":
+                    speed_col = st.selectbox("Speed column", [c for c in df.columns if 'speed' in c.lower()] or numeric_cols)
+                    st.plotly_chart(viz.speed_chart(df, timestamp_col, speed_col), use_container_width=True)
+
+                elif chart_type == "SOC Daily Min/Max":
+                    soc_col = st.selectbox("SOC column", [c for c in df.columns if 'soc' in c.lower() or 'charge' in c.lower() or 'energy' in c.lower()] or numeric_cols)
+                    st.plotly_chart(viz.soc_daily_bar(df, timestamp_col, soc_col), use_container_width=True)
+
+                elif chart_type == "Charging Sessions":
+                    soc_col = st.selectbox("SOC column", [c for c in df.columns if 'soc' in c.lower() or 'charge' in c.lower() or 'energy' in c.lower()] or numeric_cols)
+                    charger_col = st.selectbox("Charger State column", [c for c in df.columns if 'charger' in c.lower()] or [''])
+                    st.plotly_chart(viz.charging_sessions(df, timestamp_col, soc_col, charger_col), use_container_width=True)
+
+                elif chart_type == "Custom Time Series":
+                    selected_params = st.multiselect("Select parameters", numeric_cols, default=numeric_cols[:3])
+                    if selected_params:
+                        st.plotly_chart(viz.time_series(df, timestamp_col, selected_params), use_container_width=True)
+
+            elif chart_category == "Statistical & Relationship Charts":
+                chart_type = st.selectbox("Select Chart", [
+                    "Scatter Correlation",
+                    "Correlation Heatmap",
+                    "Box Plots",
+                    "Histogram",
+                ])
+
+                if chart_type == "Scatter Correlation":
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        x_col = st.selectbox("X axis", numeric_cols)
+                    with col2:
+                        y_col = st.selectbox("Y axis", numeric_cols, index=min(1, len(numeric_cols)-1))
+                    st.plotly_chart(viz.scatter_correlation(df, x_col, y_col), use_container_width=True)
+
+                elif chart_type == "Correlation Heatmap":
+                    st.plotly_chart(viz.heatmap_correlation(df), use_container_width=True)
+
+                elif chart_type == "Box Plots":
+                    selected_params = st.multiselect("Select parameters", numeric_cols, default=numeric_cols[:5])
+                    if selected_params:
+                        st.plotly_chart(viz.box_plots(df, selected_params), use_container_width=True)
+
+                elif chart_type == "Histogram":
+                    param = st.selectbox("Select parameter", numeric_cols)
+                    bins = st.slider("Bins", 10, 100, 30)
+                    st.plotly_chart(viz.histogram(df, param, bins), use_container_width=True)
+
+            elif chart_category == "Custom Chart Builder":
+                all_cols = [c for c in df.columns if c != timestamp_col]
+                st.markdown("#### Custom Chart Builder")
+                
+                # Initialize session state for telemetry charts
+                if 'tele_custom_charts' not in st.session_state:
+                    st.session_state.tele_custom_charts = []
+                
+                # Chart creation form
+                st.markdown("**Create New Chart**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    x_col = st.selectbox("X Axis", [timestamp_col] + all_cols, key="tele_x_col")
+                    graph_type = st.selectbox("Chart Type", ["line", "bar", "scatter", "area"], key="tele_graph_type")
+                with col2:
+                    chart_title = st.text_input("Chart Title", value="Custom Chart", key="tele_chart_title")
+                    y_cols = st.multiselect("Y Axis (select one or more)", numeric_cols, default=numeric_cols[:1], key="tele_y_cols")
+                with col3:
+                    st.markdown("")
+                    st.markdown("")
+                    add_chart_btn = st.button("➕ Add Chart", key="tele_add_chart_btn", use_container_width=True)
+
+                # Color pickers per Y column
+                colors = []
+                if y_cols:
+                    st.markdown("**Colors** (one per Y column)")
+                    color_cols = st.columns(min(len(y_cols), 4))
+                    default_hex = ["#636efa","#ef553b","#00cc96","#ab63fa","#ffa15a","#19d3f3"]
+                    for i, col in enumerate(y_cols):
+                        with color_cols[i % len(color_cols)]:
+                            colors.append(st.color_picker(col, value=default_hex[i % len(default_hex)], key=f"tele_color_{i}"))
+                
+                # Add chart to session state
+                if add_chart_btn and y_cols:
+                    chart_config = {
+                        'x_col': x_col,
+                        'y_cols': y_cols,
+                        'graph_type': graph_type,
+                        'colors': colors,
+                        'title': chart_title
+                    }
+                    st.session_state.tele_custom_charts.append(chart_config)
+                    st.success(f"✓ Chart '{chart_title}' added!")
+                    st.rerun()
+                
+                # Display all created charts
+                if st.session_state.tele_custom_charts:
+                    st.markdown("---")
+                    st.markdown("#### 📊 Generated Charts")
+                    
+                    for idx, chart_cfg in enumerate(st.session_state.tele_custom_charts):
+                        col_chart, col_delete = st.columns([0.95, 0.05])
+                        
+                        with col_chart:
+                            st.plotly_chart(
+                                viz.custom_chart(df, chart_cfg['x_col'], chart_cfg['y_cols'], 
+                                               chart_cfg['graph_type'], chart_cfg['colors'], chart_cfg['title']),
+                                use_container_width=True
+                            )
+                        
+                        with col_delete:
+                            if st.button("🗑️", key=f"tele_delete_{idx}", help="Delete chart"):
+                                st.session_state.tele_custom_charts.pop(idx)
+                                st.rerun()
+
+        # ── DTC CHARTS ────────────────────────────────────────────────────
+        elif viz_section == "⚠️ DTC Charts":
+            dtc_df = st.session_state["dtc_df"]
+
+            chart_category_dtc = st.selectbox("Select DTC Chart Category", [
+                "Key DTC Charts",
+                "Custom Chart Builder",
+            ])
+
+            if chart_category_dtc == "Key DTC Charts":
+                chart_type = st.selectbox("Select Chart", [
+                    "DTC Frequency Bar",
+                    "DTC Event Timeline",
+                    "DTC Severity Breakdown",
+                    "DTC Unique Codes Over Time",
+                    "Daily DTC Count",
+                ])
+
+                if chart_type == "DTC Frequency Bar":
+                    st.plotly_chart(viz.dtc_frequency_bar(dtc_df), use_container_width=True)
+
+                elif chart_type == "DTC Event Timeline":
+                    st.plotly_chart(viz.dtc_timeline(dtc_df), use_container_width=True)
+
+                elif chart_type == "DTC Severity Breakdown":
+                    st.plotly_chart(viz.dtc_severity_pie(dtc_df), use_container_width=True)
+
+                elif chart_type == "DTC Unique Codes Over Time":
+                    st.plotly_chart(viz.dtc_unique_codes_over_time(dtc_df), use_container_width=True)
+
+                elif chart_type == "Daily DTC Count":
+                    st.plotly_chart(viz.dtc_daily_count(dtc_df), use_container_width=True)
+
+            elif chart_category_dtc == "Custom Chart Builder":
+                all_dtc_cols = dtc_df.columns.tolist()
+                numeric_dtc_cols = dtc_df.select_dtypes(include=["number"]).columns.tolist()
+                
+                # Filter out timestamp from X/Y options but allow it for X-axis if needed
+                available_for_axis = [c for c in all_dtc_cols if c != "timestamp"]
+
+                st.markdown("#### Custom DTC Chart Builder")
+                
+                # Initialize session state for DTC charts
+                if 'dtc_custom_charts' not in st.session_state:
+                    st.session_state.dtc_custom_charts = []
+                
+                st.markdown("**Create New Chart**")
+                
+                # X-axis selection (support both numeric and categorical)
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    dtc_x_col = st.selectbox("X Axis", ["timestamp"] + available_for_axis, key="dtc_x_col_select")
+                    dtc_graph_type = st.selectbox("Chart Type", ["line", "bar", "scatter", "area"], key="dtc_graph_type_select")
+                
+                with col2:
+                    dtc_chart_title = st.text_input("Chart Title", value="Custom DTC Chart", key="dtc_chart_title_input")
+                    y_axis_type = st.radio("Y Axis Type", ["Numeric Only", "All Columns"], horizontal=True, key="dtc_y_type_select")
+                
+                with col3:
+                    st.markdown("")
+                    st.markdown("")
+                    st.markdown("")
+                    dtc_add_chart_btn = st.button("➕ Add Chart", key="dtc_add_chart_btn", use_container_width=True)
+                
+                # Y-axis selection - allow all columns (numeric and categorical)
+                st.markdown("**Y Axis Selection**")
+                
+                if y_axis_type == "Numeric Only":
+                    dtc_y_options = numeric_dtc_cols
+                else:
+                    dtc_y_options = available_for_axis
+                
+                dtc_y_cols = st.multiselect(
+                    "Y Axis Columns (select one or more)", 
+                    dtc_y_options, 
+                    default=dtc_y_options[:1] if dtc_y_options else [],
+                    key="dtc_y_cols_select",
+                    help="Select one or multiple columns to plot on Y-axis"
+                )
+
+                dtc_colors = []
+                if dtc_y_cols:
+                    st.markdown("**Colors** (one per Y column)")
+                    color_cols_count = min(len(dtc_y_cols), 4)
+                    dtc_color_cols = st.columns(color_cols_count)
+                    default_hex = ["#636efa","#ef553b","#00cc96","#ab63fa","#ffa15a","#19d3f3"]
+                    for i, col in enumerate(dtc_y_cols):
+                        with dtc_color_cols[i % color_cols_count]:
+                            dtc_colors.append(st.color_picker(col, value=default_hex[i % len(default_hex)], key=f"dtc_color_{i}_{col}"))
+                
+                # Add chart to session state
+                if dtc_add_chart_btn and dtc_y_cols:
+                    chart_config = {
+                        'x_col': dtc_x_col,
+                        'y_cols': dtc_y_cols,
+                        'graph_type': dtc_graph_type,
+                        'colors': dtc_colors,
+                        'title': dtc_chart_title
+                    }
+                    st.session_state.dtc_custom_charts.append(chart_config)
+                    st.success(f"✓ Chart '{dtc_chart_title}' added!")
+                    st.rerun()
+                
+                # Display all created charts
+                if st.session_state.dtc_custom_charts:
+                    st.markdown("---")
+                    st.markdown("#### 📊 Generated Charts")
+                    
+                    for idx, chart_cfg in enumerate(st.session_state.dtc_custom_charts):
+                        col_chart, col_delete = st.columns([0.95, 0.05])
+                        
+                        with col_chart:
+                            st.plotly_chart(
+                                viz.custom_chart(dtc_df, chart_cfg['x_col'], chart_cfg['y_cols'], 
+                                               chart_cfg['graph_type'], chart_cfg['colors'], chart_cfg['title']),
+                                use_container_width=True
+                            )
+                        
+                        with col_delete:
+                            if st.button("🗑️", key=f"dtc_delete_{idx}", help="Delete chart"):
+                                st.session_state.dtc_custom_charts.pop(idx)
+                                st.rerun()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KPI DASHBOARD SECTION
+# ─────────────────────────────────────────────────────────────────────────────
+elif data_type == "📈 KPI Dashboard":
+    if 'display_df' not in st.session_state:
+        st.info("ℹ️ Fetch telemetry data first, then come here to generate KPI dashboard.")
+    else:
+        df = st.session_state['display_df']
+        plate_number = st.session_state.get('tele_plate', 'Unknown')
+        start_date = st.session_state.get('tele_start', 'N/A')
+        end_date = st.session_state.get('tele_end', 'N/A')
+        selected_tz = st.session_state.get('tele_tz', 'UTC')
+        
+        # Generate report title
+        report_title = f"📊 Vehicle Performance Report\n**Plate:** {plate_number} | **Period:** {start_date} to {end_date} | **TZ:** {selected_tz}"
+        st.markdown(report_title)
+        st.markdown("---")
+        
+        # Initialize KPI Agent
+        kpi = KPIAgent()
+        
+        # Determine timestamp column
+        timestamp_col = 'dateProcessed' if 'dateProcessed' in df.columns else 'timestamp'
+        
+        # Calculate metrics
+        with st.spinner("🔄 Calculating KPI metrics..."):
+            metrics = kpi.calculate_metrics(
+                df,
+                timestamp_col=timestamp_col,
+                engine_state_col='engineState' if 'engineState' in df.columns else None,
+                motor_hour_col='motorHour' if 'motorHour' in df.columns else None,
+                speed_col='speed' if 'speed' in df.columns else None,
+                odometer_col='odometer' if 'odometer' in df.columns else None
+            )
+        
+        # ──────────────────────────────────────────────────────────────────
+        # OVERALL KPI METRICS (CARDS)
+        # ──────────────────────────────────────────────────────────────────
+        st.subheader("📌 Overall KPI Metrics")
+        
+        # Formula explanations
+        with st.expander("📐 View Formulas"):
+            st.markdown("""
+            **Formulas Used:**
+            - **Running Hours** = Time vehicle is moving (speed > 0.5 km/h)
+            - **Idle Hours** = Time engine is on but vehicle is stationary
+            - **Stopped Hours** = 24h - Running Hours (engine off)
+            - **Running %** = (Running Hours / 24h) × 100
+            - **Idle %** = (Idle Hours / 24h) × 100
+            - **Stopped %** = (Stopped Hours / 24h) × 100
+            - **Total Distance** = End Odometer - Start Odometer
+            - **Total Motor Hours** = End Motor Hour - Start Motor Hour
+            """)
+        
+        stats = metrics.overall_stats
+        
+        # Create metric cards
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "🏃 Running %",
+                f"{stats['running_pct']:.1f}%",
+                delta=None,
+                help="Percentage of time vehicle was running"
+            )
+        
+        with col2:
+            st.metric(
+                "⏸️ Idle %",
+                f"{stats['idle_pct']:.1f}%",
+                delta=None,
+                help="Percentage of time vehicle was idle (engine on, not moving)"
+            )
+        
+        with col3:
+            st.metric(
+                "⛔ Stopped %",
+                f"{stats['stopped_pct']:.1f}%",
+                delta=None,
+                help="Percentage of time vehicle was stopped (engine off)"
+            )
+        
+        with col4:
+            st.metric(
+                "📍 Total Distance",
+                f"{stats['total_distance']:.1f} km",
+                delta=None,
+                help="Total distance traveled"
+            )
+        
+        col5, col6, col7, col8 = st.columns(4)
+        
+        with col5:
+            st.metric(
+                "⏱️ Total Motor Hours",
+                f"{stats['total_motor_hours']:.1f} h",
+                delta=None,
+                help="Total motor/engine hours"
+            )
+        
+        with col6:
+            st.metric(
+                "🏁 Running Hours",
+                f"{stats['total_running_hours']:.1f} h",
+                delta=None,
+                help="Total time spent running"
+            )
+        
+        with col7:
+            st.metric(
+                "⏸️ Idle Hours",
+                f"{stats['total_idle_hours']:.1f} h",
+                delta=None,
+                help="Total time spent idle"
+            )
+        
+        with col8:
+            st.metric(
+                "📊 Avg Speed",
+                f"{stats['avg_speed']:.1f} km/h",
+                delta=None,
+                help="Average speed during running period"
+            )
+        
+        st.markdown("---")
+        
+        # ──────────────────────────────────────────────────────────────────
+        # DAILY METRICS TAB
+        # ──────────────────────────────────────────────────────────────────
+        st.subheader("📅 Daily Metrics & Odometer")
+        
+        tab1, tab2 = st.tabs(["Daily Hours & Percentages", "Daily Odometer"])
+        
+        with tab1:
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                st.plotly_chart(kpi.create_daily_hours_chart(metrics.daily_metrics), use_container_width=True)
+            
+            with col_chart2:
+                st.plotly_chart(kpi.create_daily_percentage_chart(metrics.daily_metrics), use_container_width=True)
+            
+            st.markdown("**Daily Metrics Table**")
+            daily_display = metrics.daily_metrics[['date', 'running_hours', 'idle_hours', 
+                                                    'stopped_hours', 'motor_hours', 'running_pct', 'idle_pct', 'stopped_pct']].copy()
+            daily_display.columns = ['Date', 'Running Hrs', 'Idle Hrs', 'Stopped Hrs', 'Motor Hrs', 'Running %', 'Idle %', 'Stopped %']
+            st.dataframe(daily_display, use_container_width=True)
+        
+        with tab2:
+            st.markdown("**Daily Odometer Cards**")
+            
+            daily_odo = metrics.daily_odometer
+            
+            # Display as cards
+            for idx, row in daily_odo.iterrows():
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        f"📍 {row['date']} - Start",
+                        f"{row['start_odometer']:.1f} km",
+                        delta=None
+                    )
+                
+                with col2:
+                    st.metric(
+                        f"📍 {row['date']} - End",
+                        f"{row['end_odometer']:.1f} km",
+                        delta=None
+                    )
+                
+                with col3:
+                    st.metric(
+                        f"📍 {row['date']} - Avg",
+                        f"{row['avg_odometer']:.1f} km",
+                        delta=None
+                    )
+                
+                with col4:
+                    st.metric(
+                        f"📍 {row['date']} - Distance",
+                        f"{row['distance_traveled']:.1f} km",
+                        delta=None
+                    )
+            
+            st.markdown("**Daily Odometer Table**")
+            odo_display = daily_odo[['date', 'start_odometer', 'end_odometer', 'avg_odometer', 'distance_traveled']].copy()
+            odo_display.columns = ['Date', 'Start (km)', 'End (km)', 'Avg (km)', 'Distance (km)']
+            st.dataframe(odo_display, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # ──────────────────────────────────────────────────────────────────
+        # WEEKLY METRICS TAB
+        # ──────────────────────────────────────────────────────────────────
+        st.subheader("📆 Weekly Metrics & Odometer")
+        
+        tab3, tab4 = st.tabs(["Weekly Hours & Percentages", "Weekly Odometer"])
+        
+        with tab3:
+            col_chart3, col_chart4 = st.columns(2)
+            
+            with col_chart3:
+                st.plotly_chart(kpi.create_weekly_hours_chart(metrics.weekly_metrics), use_container_width=True)
+            
+            with col_chart4:
+                st.plotly_chart(kpi.create_weekly_percentage_chart(metrics.weekly_metrics), use_container_width=True)
+            
+            st.markdown("**Weekly Metrics Table**")
+            weekly_display = metrics.weekly_metrics[['week', 'running_hours', 'idle_hours', 
+                                                      'stopped_hours', 'motor_hours', 'running_pct', 'idle_pct', 'stopped_pct']].copy()
+            weekly_display.columns = ['Week', 'Running Hrs', 'Idle Hrs', 'Stopped Hrs', 'Motor Hrs', 'Running %', 'Idle %', 'Stopped %']
+            st.dataframe(weekly_display, use_container_width=True)
+        
+        with tab4:
+            st.markdown("**Weekly Odometer Cards**")
+            
+            weekly_odo = metrics.weekly_odometer
+            
+            # Display as cards
+            for idx, row in weekly_odo.iterrows():
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        f"📍 {row['week']} - Start",
+                        f"{row['start_odometer']:.1f} km",
+                        delta=None
+                    )
+                
+                with col2:
+                    st.metric(
+                        f"📍 {row['week']} - End",
+                        f"{row['end_odometer']:.1f} km",
+                        delta=None
+                    )
+                
+                with col3:
+                    st.metric(
+                        f"📍 {row['week']} - Avg",
+                        f"{row['avg_odometer']:.1f} km",
+                        delta=None
+                    )
+                
+                with col4:
+                    st.metric(
+                        f"📍 {row['week']} - Distance",
+                        f"{row['distance_traveled']:.1f} km",
+                        delta=None
+                    )
+            
+            st.markdown("**Weekly Odometer Table**")
+            weekly_odo_display = weekly_odo[['week', 'start_odometer', 'end_odometer', 'avg_odometer', 'distance_traveled']].copy()
+            weekly_odo_display.columns = ['Week', 'Start (km)', 'End (km)', 'Avg (km)', 'Distance (km)']
+            st.dataframe(weekly_odo_display, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN EXECUTION
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    if st.session_state.authenticated:
+        show_main_app()
+    else:
+        show_login_page()
+            
+            st.markdown("**Weekly Odometer Table**")
+            weekly_odo_display = weekly_odo[['week', 'start_odometer', 'end_odometer', 'avg_odometer', 'distance_traveled']].copy()
+            weekly_odo_display.columns = ['Week', 'Start (km)', 'End (km)', 'Avg (km)', 'Distance (km)']
+            st.dataframe(weekly_odo_display, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # ──────────────────────────────────────────────────────────────────
+        # EXPORT TO HTML
+        # ──────────────────────────────────────────────────────────────────
+        st.subheader("📥 Export Dashboard")
+        
+        col_export1, col_export2 = st.columns(2)
+        
+        with col_export1:
+            if st.button("💾 Save Report as HTML", key="export_html_btn", use_container_width=True):
+                with st.spinner("🔄 Generating HTML report..."):
+                    try:
+                        import tempfile
+                        import os
+                        
+                        # Prepare charts
+                        figs = {
+                            'daily_hours': kpi.create_daily_hours_chart(metrics.daily_metrics),
+                            'daily_pct': kpi.create_daily_percentage_chart(metrics.daily_metrics),
+                            'weekly_hours': kpi.create_weekly_hours_chart(metrics.weekly_metrics),
+                            'weekly_pct': kpi.create_weekly_percentage_chart(metrics.weekly_metrics),
+                        }
+                        
+                        # Generate HTML in temp directory
+                        temp_dir = tempfile.gettempdir()
+                        output_path = os.path.join(temp_dir, f"KPI_Report_{plate_number}_{start_date}_to_{end_date}.html")
+                        kpi.generate_html_report(
+                            output_path=output_path,
+                            plate_number=plate_number,
+                            start_date=str(start_date),
+                            end_date=str(end_date),
+                            timezone=selected_tz,
+                            metrics=metrics,
+                            figs=figs
+                        )
+                        
+                        # Read and provide download
+                        with open(output_path, 'r', encoding='utf-8') as f:
+                            html_content = f.read()
+                        
+                        st.download_button(
+                            label="⬇️ Download HTML Report",
+                            data=html_content,
+                            file_name=f"KPI_Report_{plate_number}_{start_date}_to_{end_date}.html",
+                            mime="text/html",
+                            use_container_width=True
+                        )
+                        
+                        st.success(f"✓ HTML report generated successfully!")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error generating HTML report: {e}")
+
+        with col_export2:
+            st.info("ℹ️ Download the interactive HTML report to share with team members or archive for future reference.")
