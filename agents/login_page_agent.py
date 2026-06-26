@@ -69,7 +69,7 @@ def render_login_page(*, title: str = "TLD/XOPS VISUALIZATION TOOL") -> None:
         st.markdown("---")
         st.markdown(
             "<p style='text-align: center; font-size: 12px; color: gray;'>"
-            "🔒 Your credentials are encrypted and not stored. | For support, contact: admin@linkfms.com"
+            "🔒 Your credentials are encrypted and not stored. | For support, contact: prashanth.nataraj@tld-maini.com"
             "</p>",
             unsafe_allow_html=True,
         )

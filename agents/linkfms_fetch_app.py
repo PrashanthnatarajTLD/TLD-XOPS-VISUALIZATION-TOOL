@@ -21,8 +21,6 @@ import plotly.io as pio
 from save_html_visualize_agent import build_visualize_export_html, VisualizeExportContext
 from save_html_kpi_agent import build_kpi_export_html, KPIExportContext
 
-from linkfms_combined_agent import fetch_dtc_and_telemetry_linked_by_timestamp
-
 
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -99,7 +97,6 @@ def show_main_app() -> None:
 options=[
             "📡 Raw Telemetry",
             "⚠️ DTC (Diagnostic Trouble Codes)",
-            "🔗 Linked DTC + Raw Telemetry (timestamp)",
             "📊 Visualize",
             "📈 KPI Dashboard",
         ],
@@ -107,121 +104,9 @@ options=[
     )
 
     # ─────────────────────────────────────────────────────────────────────────────
-    # TELEMETRY + DTC LINK
-    # ─────────────────────────────────────────────────────────────────────────────
-    if data_type == "🔗 Linked DTC + Raw Telemetry (timestamp)":
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            batch_size_days = st.number_input("Batch Size (days)", min_value=1, max_value=365, value=30)
-        with col2:
-            alignment_method = st.selectbox(
-                "Telemetry Timestamp Link Mode",
-                options=["nearest"],
-                index=0,
-            )
-        with col3:
-            selected_tz_label = st.selectbox("Display Timezone", options=list(TIMEZONE_OPTIONS.keys()), index=1)
-        selected_tz = TIMEZONE_OPTIONS[selected_tz_label]
-
-        if st.button("🔗 Fetch Linked DTC + Raw Telemetry", type="primary"):
-            if not plate_number:
-                st.error("❌ Please enter a vehicle plate number.")
-                return
-
-            try:
-                creds = st.session_state.get("user_info") or {}
-                username = creds.get("username") or creds.get("userid") or ""
-                password = creds.get("password") or ""
-
-                with st.spinner("🔄 Fetching DTC + Telemetry and linking by timestamp..."):
-                    # Single shot fetch in our new agent (it already fetches both).
-                    # Keeping batch_size_days unused for now to avoid re-fetch complexity.
-                    result = fetch_dtc_and_telemetry_linked_by_timestamp(
-                        plate_number=plate_number,
-                        start_date=start_date,
-                        end_date=end_date,
-                        username=username,
-                        password=password,
-                        telemetry_alignment="nearest",
-                        telemetry_timestamp_col="date",
-                        dtc_timestamp_col="timestamp",
-                    )
-
-                combined_df = result.get("combined_df")
-                dtc_df = result.get("dtc_df")
-                telemetry_df = result.get("telemetry_df")
-
-                # Show debug information
-                st.info(
-                    f"📊 **Debug Info:**\n"
-                    f"- DTC Records Fetched: {len(dtc_df) if dtc_df is not None and not dtc_df.empty else 0}\n"
-                    f"- Telemetry Records Fetched: {len(telemetry_df) if telemetry_df is not None and not telemetry_df.empty else 0}\n"
-                    f"- Combined Records (Exact Timestamp Match): {len(combined_df) if combined_df is not None and not combined_df.empty else 0}"
-                )
-
-                if combined_df is None or combined_df.empty:
-                    st.warning("⚠️ No combined data found for the selected range.")
-                    
-                    # Show ALL sample data for debugging
-                    if dtc_df is not None and not dtc_df.empty:
-                        st.warning(f"ℹ️ {len(dtc_df)} DTC records were fetched, but no matching telemetry records found at exact timestamps.")
-                        st.write(f"**All DTC Timestamps ({len(dtc_df)} records):**")
-                        st.dataframe(dtc_df[["timestamp", "code"]], use_container_width=True)
-                    
-                    if telemetry_df is not None and not telemetry_df.empty:
-                        st.write(f"**All Telemetry Timestamps (showing first 100 of {len(telemetry_df)} records):**")
-                        if "timestamp" in telemetry_df.columns:
-                            st.dataframe(telemetry_df[["timestamp"]].head(100), use_container_width=True)
-                    
-                    return
-
-                # Convert combined_df timestamp to display tz (it will be UTC already)
-                if "date" in combined_df.columns:
-                    # Ensure datetime is properly formatted
-                    date_col = pd.to_datetime(combined_df["date"], errors="coerce")
-                    
-                    # If timezone-naive, localize to UTC first
-                    if date_col.dt.tz is None:
-                        date_col = date_col.dt.tz_localize("UTC")
-                    
-                    # Convert to selected display timezone
-                    date_col = date_col.dt.tz_convert(selected_tz)
-                    
-                    # Remove timezone info for display (keep the local time)
-                    combined_df["date"] = date_col.dt.tz_localize(None)
-                
-                st.info(f"✓ Timezone: {selected_tz_label} (UTC times converted to local)")
-
-                # Preserve compatibility with existing UI assumptions (dateProcessed)
-                combined_df = combined_df.rename(columns={"date": "dateProcessed"})
-
-                st.session_state["combined_df"] = combined_df
-                st.session_state["tele_plate"] = plate_number
-                st.session_state["tele_start"] = start_date
-                st.session_state["tele_end"] = end_date
-                st.session_state["tele_tz"] = selected_tz_label
-                st.session_state["dtc_df"] = dtc_df
-
-                # Calculate statistics
-                total_dtc = len(dtc_df) if dtc_df is not None and not dtc_df.empty else 0
-                combined_rows = len(combined_df)
-                
-                st.success(f"✓ Combined dataset: {combined_rows} rows (all {total_dtc} DTC records kept as baseline)")
-                if combined_rows > total_dtc:
-                    st.info(f"📊 {combined_rows - total_dtc} extra rows due to multiple telemetry matches per DTC timestamp")
-
-            except Exception as e:
-                st.error(f"An unexpected error occurred: {e}")
-
-        if "combined_df" in st.session_state:
-            st.subheader("Linked Preview (Telemetry + DTC fields)")
-            preview_rows = 500
-            st.dataframe(st.session_state["combined_df"].head(preview_rows), use_container_width=True)
-
-    # ─────────────────────────────────────────────────────────────────────────────
     # TELEMETRY
     # ─────────────────────────────────────────────────────────────────────────────
-    elif data_type == "📡 Raw Telemetry":
+    if data_type == "📡 Raw Telemetry":
         col1, col2, col3 = st.columns(3)
         with col1:
             batch_size_days = st.number_input("Batch Size (days)", min_value=1, max_value=365, value=30)
@@ -327,35 +212,53 @@ options=[
                     )
                     extracted_df = extracted_df.loc[:, ~extracted_df.columns.duplicated(keep="first")]
 
+                    # Keep engine code related fields as true observed values only.
+                    # Missing values should stay missing (not string placeholders).
+                    for col in ["EngineCodeDescription", "Source", "EngineCode"]:
+                        if col in extracted_df.columns:
+                            extracted_df[col] = extracted_df[col].replace(
+                                {"None": pd.NA, "nan": pd.NA, "NaN": pd.NA, "": pd.NA}
+                            )
+
                 with st.spinner(f"⏱ Filling missing values ({alignment_method})..."):
                     extracted_df = extracted_df.dropna(subset=[timestamp_col_name])
                     extracted_df = extracted_df.sort_values(timestamp_col_name).reset_index(drop=True)
 
                     non_ts_cols = [c for c in extracted_df.columns if c != timestamp_col_name]
+                    no_fill_cols = [
+                        c for c in ["EngineCodeDescription", "Source", "EngineCode"]
+                        if c in non_ts_cols
+                    ]
+                    fill_cols = [c for c in non_ts_cols if c not in no_fill_cols]
 
                     # Track which values are actually forward/back-filled.
                     # For each column: mark True where the value was NaN in the original extracted_df,
                     # but becomes non-NaN after filling.
                     original_is_nan = extracted_df[non_ts_cols].isna()
+                    filled_mask = pd.DataFrame(False, index=extracted_df.index, columns=non_ts_cols)
 
                     if alignment_method == "forward_fill":
-                        extracted_df[non_ts_cols] = extracted_df[non_ts_cols].ffill()
-                        filled_mask = original_is_nan & extracted_df[non_ts_cols].notna()
+                        if fill_cols:
+                            extracted_df[fill_cols] = extracted_df[fill_cols].ffill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
                     elif alignment_method == "backward_fill":
-                        extracted_df[non_ts_cols] = extracted_df[non_ts_cols].bfill()
-                        filled_mask = original_is_nan & extracted_df[non_ts_cols].notna()
+                        if fill_cols:
+                            extracted_df[fill_cols] = extracted_df[fill_cols].bfill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
                     elif alignment_method in ("interpolate", "nearest"):
-                        numeric_cols = extracted_df[non_ts_cols].select_dtypes(include="number").columns.tolist()
+                        numeric_cols = extracted_df[fill_cols].select_dtypes(include="number").columns.tolist() if fill_cols else []
                         if numeric_cols:
                             extracted_df[numeric_cols] = extracted_df[numeric_cols].interpolate(
                                 method="linear", limit_direction="both"
                             )
                         # Remaining NaNs are handled with ffill/bfill
-                        extracted_df[non_ts_cols] = extracted_df[non_ts_cols].ffill().bfill()
-                        filled_mask = original_is_nan & extracted_df[non_ts_cols].notna()
+                        if fill_cols:
+                            extracted_df[fill_cols] = extracted_df[fill_cols].ffill().bfill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
                     else:
-                        extracted_df[non_ts_cols] = extracted_df[non_ts_cols].ffill().bfill()
-                        filled_mask = original_is_nan & extracted_df[non_ts_cols].notna()
+                        if fill_cols:
+                            extracted_df[fill_cols] = extracted_df[fill_cols].ffill().bfill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
 
                     display_df = extracted_df.rename(columns={"timestamp": "dateProcessed"})
 
@@ -393,6 +296,12 @@ options=[
             display_df = st.session_state["display_df"]
             st.subheader("Fetched Data Preview (Bold = forward/back-filled)")
 
+            # Keep internal datetimes for analytics, but render/export with seconds.
+            display_df_out = display_df.copy()
+            out_date_cols = [c for c in ["date", "dateReceived", "dateProcessed", "timestamp"] if c in display_df_out.columns]
+            for col in out_date_cols:
+                display_df_out[col] = pd.to_datetime(display_df_out[col], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+
             # If we have fill masks from alignment stage, render styled table:
             # - Bold: value was filled (original NaN → non-NaN)
             # - Normal: original generated value
@@ -400,7 +309,7 @@ options=[
             # Avoid Streamlit/Pandas Styler hard limits by only styling a preview subset.
             # (Styler render cell limit is commonly 262144 cells by default.)
             preview_rows = 500
-            display_preview = display_df.head(preview_rows)
+            display_preview = display_df_out.head(preview_rows)
             if fill_masks:
                 styled = display_preview.style
 
@@ -416,7 +325,7 @@ options=[
 
                 st.dataframe(styled, use_container_width=True)
             else:
-                st.dataframe(display_df, use_container_width=True)
+                st.dataframe(display_df_out, use_container_width=True)
 
 
             date_col_display = "dateProcessed" if "dateProcessed" in display_df.columns else "timestamp"
@@ -431,7 +340,7 @@ options=[
             st.markdown("---")
             # For downloads, also preserve the filled/non-filled info by adding a column-wise mask.
             # Excel export then uses that mask to apply real bold formatting.
-            csv_df = display_df.copy()
+            csv_df = display_df_out.copy()
             fill_masks = st.session_state.get("fill_masks") or {}
 
             for col, mask_list in fill_masks.items():

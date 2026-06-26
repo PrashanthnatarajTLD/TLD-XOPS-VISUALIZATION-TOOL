@@ -247,11 +247,11 @@ class LinkFMSAPIAgent:
                         page_size: int = 1000000) -> Optional[TelemetryData]:
         """
         Fetch data using custom filters.
-        
+
         Args:
             filters: Custom filter dictionary
             page_size: Maximum number of records to fetch
-            
+
         Returns:
             TelemetryData object or None
         """

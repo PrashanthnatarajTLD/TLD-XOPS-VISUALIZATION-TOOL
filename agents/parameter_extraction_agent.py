@@ -207,6 +207,28 @@ class ParameterExtractionAgent:
 
         # VCM state
         "VCM Vehicle Access Control State I/O": {"aliases": ["VCM Vehicle Access Control State I/O"], "unit": "", "data_type": "float"},
+
+        # Engine/ops fields requested for raw telemetry preview
+        "Ops Work Mode 1": {
+            "aliases": ["Ops Work Mode 1", "Ops work mode 1", "OpsWorkMode1"],
+            "unit": "",
+            "data_type": "string",
+        },
+        "EngineCodeDescription": {
+            "aliases": ["EngineCodeDescription", "Engine Code Description"],
+            "unit": "",
+            "data_type": "string",
+        },
+        "Source": {
+            "aliases": ["Source"],
+            "unit": "",
+            "data_type": "string",
+        },
+        "EngineCode": {
+            "aliases": ["EngineCode", "Engine Code"],
+            "unit": "",
+            "data_type": "string",
+        },
     }
     
     def __init__(self):
@@ -349,19 +371,82 @@ class ParameterExtractionAgent:
             pairs.append(''.join(current))
 
         for pair in pairs:
-            if ':' not in pair:
+            if ':' not in pair and '=' not in pair:
                 continue
             try:
-                key, value = pair.split(':', 1)
+                if ':' in pair and '=' in pair:
+                    sep = ':' if pair.index(':') < pair.index('=') else '='
+                    key, value = pair.split(sep, 1)
+                elif ':' in pair:
+                    key, value = pair.split(':', 1)
+                else:
+                    key, value = pair.split('=', 1)
+
                 key = key.strip()
                 value = value.strip()
+
+                # Normalize wrapped value formats like "(20696)" -> "20696".
+                if value.startswith('(') or value.endswith(')'):
+                    value = value.lstrip('(').rstrip(')').strip()
+
                 canonical_name = self.extraction_mapping.get(key.lower())
                 if canonical_name:
                     parsed[canonical_name] = value
             except Exception:
                 continue
 
+        # Extract engine-code details from nested payload blocks like:
+        # AccessoryEvent_EngineCodeDetails:[{..., EngineCodeDescription=(20696), EngineCode=(20696), Source=FS008}, ...]
+        engine_details = self._extract_engine_code_details(telemetry_str)
+        for k, v in engine_details.items():
+            if v:
+                parsed[k] = v
+
         return parsed
+
+    def _extract_engine_code_details(self, telemetry_str: str) -> Dict[str, str]:
+        """Extract EngineCodeDescription, Source, EngineCode from nested engine details block."""
+        result = {
+            "EngineCodeDescription": "",
+            "Source": "",
+            "EngineCode": "",
+        }
+
+        if not isinstance(telemetry_str, str) or not telemetry_str:
+            return result
+
+        # Capture the details segment without cutting across subsequent top-level keys.
+        m = re.search(r"AccessoryEvent_EngineCodeDetails\s*:\s*\[(.*?)\](?:,\s*[A-Za-z_][A-Za-z0-9_ ]*\s*[:=]|$)", telemetry_str)
+        details_text = m.group(1) if m else telemetry_str
+
+        desc_vals = re.findall(r"EngineCodeDescription\s*=\s*([^,}]+)", details_text)
+        source_vals = re.findall(r"Source\s*=\s*([^,}]+)", details_text)
+        code_vals = re.findall(r"EngineCode\s*=\s*([^,}]+)", details_text)
+
+        def _clean(v: str) -> str:
+            v = str(v).strip().strip('"').strip("'")
+            if v.startswith("(") and v.endswith(")"):
+                v = v[1:-1].strip()
+            return v
+
+        def _clean_description(v: str) -> str:
+            v = _clean(v)
+            v = re.sub(r"^\((\d+)\)", r"\1)", v)
+            return v.strip()
+
+        desc_clean = [_clean_description(v) for v in desc_vals if _clean_description(v)]
+        source_clean = [_clean(v) for v in source_vals if _clean(v)]
+        code_clean = [_clean(v) for v in code_vals if _clean(v)]
+
+        # Keep all actual observed values for the timestamp, de-duplicated in first-seen order.
+        if desc_clean:
+            result["EngineCodeDescription"] = " | ".join(dict.fromkeys(desc_clean))
+        if source_clean:
+            result["Source"] = " | ".join(dict.fromkeys(source_clean))
+        if code_clean:
+            result["EngineCode"] = " | ".join(dict.fromkeys(code_clean))
+
+        return result
     
     def _convert_value(self, parameter_name: str, value: str):
         """Convert string value to appropriate data type"""
@@ -397,7 +482,9 @@ class ParameterExtractionAgent:
             elif data_type == "int":
                 df[parameter_name] = pd.to_numeric(df[parameter_name], errors='coerce').astype('Int64')
             elif data_type == "string":
-                df[parameter_name] = df[parameter_name].astype(str)
+                df[parameter_name] = df[parameter_name].replace(
+                    {None: pd.NA, "None": pd.NA, "nan": pd.NA, "NaN": pd.NA, "": pd.NA}
+                ).astype("string")
         except Exception:
             pass
         
