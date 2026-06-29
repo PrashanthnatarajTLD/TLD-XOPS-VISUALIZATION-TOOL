@@ -1,4 +1,4 @@
-"""Streamlit application for fetching EV Telemetry and DTC Data from LINKFMS API.
+﻿"""Streamlit application for fetching EV Telemetry and DTC Data from LINKFMS API.
 
 This file keeps the original app behavior (telemetry/DTC fetch, visualization, KPI)
 but ensures:
@@ -41,14 +41,14 @@ from save_html_kpi_agent import build_kpi_export_html, KPIExportContext
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
 # PAGE CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="TLD/XOPS VISUALIZATION TOOL", page_icon="🌐", layout="wide")
+# "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
+st.set_page_config(page_title="🌐 TLD/XOPS VISUALIZATION TOOL", page_icon="T", layout="wide")
 
-# ─────────────────────────────────────────────────────────────────────────────
+# "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
 # INITIALIZE SESSION STATE
-# ─────────────────────────────────────────────────────────────────────────────
+# "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
 LoginManager.initialize_session()
 
 
@@ -58,21 +58,21 @@ def show_main_app() -> None:
     # Header with user info and logout
     col_title, col_logout = st.columns([4, 1])
     with col_title:
-        st.title("🌐 TLD/XOPS VISUALIZATION TOOL")
+        st.title("🌐TLD/XOPS VISUALIZATION TOOL")
     with col_logout:
         st.markdown("")
         st.markdown("")
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("➜] Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.session_state.user_info = None
             st.rerun()
 
     st.markdown(
-        f"**👤 Logged in as:** {st.session_state.user_info['name']} ({st.session_state.user_info['role']})"
+        f"**Logged in as:** {st.session_state.user_info['name']} ({st.session_state.user_info['role']} 👤)"
     )
     st.markdown("---")
 
-    st.subheader("📋 Fetch Parameters")
+    st.subheader("Fetch Parameters")
     col1, col2, col3 = st.columns(3)
     with col1:
         plate_number = st.text_input("Vehicle Plate Number", placeholder="e.g., T118059")
@@ -83,11 +83,11 @@ def show_main_app() -> None:
 
     TIMEZONE_OPTIONS = {
         "UTC": "UTC",
-        "IST — India (UTC+5:30)": "Asia/Kolkata",
-        "EST — USA Eastern (UTC-5)": "America/New_York",
-        "CST — USA Central (UTC-6)": "America/Chicago",
-        "PST — USA Pacific (UTC-8)": "America/Los_Angeles",
-        "CET — France/Europe (UTC+1)": "Europe/Paris",
+        "IST - India (UTC+5:30)": "Asia/Kolkata",
+        "EST - USA Eastern (UTC-5)": "America/New_York",
+        "CST - USA Central (UTC-6)": "America/Chicago",
+        "PST - USA Pacific (UTC-8)": "America/Los_Angeles",
+        "CET - France/Europe (UTC+1)": "Europe/Paris",
     }
 
     st.markdown("---")
@@ -95,18 +95,18 @@ def show_main_app() -> None:
     data_type = st.radio(
         "Select Data Type to Fetch",
 options=[
-            "📡 Raw Telemetry",
-            "⚠️ DTC (Diagnostic Trouble Codes)",
-            "📊 Visualize",
-            "📈 KPI Dashboard",
+            "Raw Telemetry",
+            "DTC (Diagnostic Trouble Codes)",
+            "Visualize",
+            "KPI Dashboard",
         ],
         horizontal=True,
     )
 
-    # ─────────────────────────────────────────────────────────────────────────────
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
     # TELEMETRY
-    # ─────────────────────────────────────────────────────────────────────────────
-    if data_type == "📡 Raw Telemetry":
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
+    if data_type == "Raw Telemetry":
         col1, col2, col3 = st.columns(3)
         with col1:
             batch_size_days = st.number_input("Batch Size (days)", min_value=1, max_value=365, value=30)
@@ -120,9 +120,9 @@ options=[
             selected_tz_label = st.selectbox("Display Timezone", options=list(TIMEZONE_OPTIONS.keys()), index=1)
         selected_tz = TIMEZONE_OPTIONS[selected_tz_label]
 
-        if st.button("📥 Fetch Telemetry Data", type="primary"):
+        if st.button("Fetch Telemetry Data", type="primary"):
             if not plate_number:
-                st.error("❌ Please enter a vehicle plate number.")
+                st.error("Please enter a vehicle plate number.")
                 return
 
             try:
@@ -136,10 +136,10 @@ options=[
                 all_dataframes = []
                 current_start = start_date
 
-                with st.spinner("🔄 Fetching telemetry data in batches..."):
+                with st.spinner("Fetching telemetry data in batches..."):
                     while current_start <= end_date:
                         current_end = min(current_start + timedelta(days=batch_size_days - 1), end_date)
-                        st.info(f"Fetching {plate_number}: {current_start} → {current_end}")
+                        st.info(f"Fetching {plate_number}: {current_start} to {current_end}")
                         batch = api_agent.fetch_by_date_and_vehicle(
                             plate_number=plate_number,
                             start_date=current_start.isoformat(),
@@ -150,7 +150,7 @@ options=[
                         current_start = current_end + timedelta(days=1)
 
                 if not all_dataframes:
-                    st.warning("⚠️ No data found.")
+                    st.warning("No data found.")
                     return
 
                 combined_df = pd.concat(all_dataframes, ignore_index=True)
@@ -172,7 +172,7 @@ options=[
                     source_file=f"LINKFMS API - {plate_number}",
                 )
 
-                with st.spinner("📊 Extracting parameters..."):
+                with st.spinner("Extracting parameters..."):
                     extraction_agent = ParameterExtractionAgent()
                     extraction_result = extraction_agent.extract_parameters(
                         telemetry_data.dataframe, source_column="telemetry_raw"
@@ -195,11 +195,11 @@ options=[
                         "Veh Inching",
                         "EV Battery Cell Temp Min",
                         "EV Battery Cell Temp Max",
-                        "EV Battery Cell Temp Min (°C)",
-                        "EV Battery Cell Temp Max (°C)",
+                        "EV Battery Cell Temp Min (C)",
+                        "EV Battery Cell Temp Max (C)",
                         "OBU Vin State",
                         "OBU Vin Data Mb/M",
-                        "OBU Internal Temperature (°C)",
+                        "OBU Internal Temperature (C)",
                         "Alrm Harsh Braking",
                         "Alrm Excessive Acceleration",
                         "Alrm No Trip Motion",
@@ -220,7 +220,7 @@ options=[
                                 {"None": pd.NA, "nan": pd.NA, "NaN": pd.NA, "": pd.NA}
                             )
 
-                with st.spinner(f"⏱ Filling missing values ({alignment_method})..."):
+                with st.spinner(f" Filling missing values ({alignment_method})..."):
                     extracted_df = extracted_df.dropna(subset=[timestamp_col_name])
                     extracted_df = extracted_df.sort_values(timestamp_col_name).reset_index(drop=True)
 
@@ -286,7 +286,7 @@ options=[
                 st.session_state["tele_end"] = end_date
                 st.session_state["tele_tz"] = selected_tz_label
 
-                st.success(f"✓ {len(display_df)} records fetched for {plate_number}. TZ: {selected_tz_label}")
+                st.success(f"{len(display_df)} records fetched for {plate_number}. TZ: {selected_tz_label}")
 
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
@@ -303,18 +303,20 @@ options=[
                 display_df_out[col] = pd.to_datetime(display_df_out[col], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
 
             # If we have fill masks from alignment stage, render styled table:
-            # - Bold: value was filled (original NaN → non-NaN)
+            # - Bold: value was filled (original NaN ?' non-NaN)
             # - Normal: original generated value
             fill_masks = st.session_state.get("fill_masks") or {}
             # Avoid Streamlit/Pandas Styler hard limits by only styling a preview subset.
             # (Styler render cell limit is commonly 262144 cells by default.)
             preview_rows = 500
-            display_preview = display_df_out.head(preview_rows)
+            hidden_preview_cols = ["Speed (km/h)"]
+            display_preview_df = display_df_out.drop(columns=hidden_preview_cols, errors="ignore")
+            display_preview = display_preview_df.head(preview_rows)
             if fill_masks:
                 styled = display_preview.style
 
                 for col, mask_list in fill_masks.items():
-                    if col in display_df.columns:
+                    if col in display_preview.columns:
                         mask_series = pd.Series(mask_list, index=display_df.index).astype(bool)
                         styled = styled.apply(
                             lambda s, ms=mask_series: ["font-weight: 700" if ms.iloc[i] else ""
@@ -325,7 +327,7 @@ options=[
 
                 st.dataframe(styled, use_container_width=True)
             else:
-                st.dataframe(display_df_out, use_container_width=True)
+                st.dataframe(display_preview_df, use_container_width=True)
 
 
             date_col_display = "dateProcessed" if "dateProcessed" in display_df.columns else "timestamp"
@@ -350,7 +352,7 @@ options=[
             col_csv, col_excel = st.columns(2)
             with col_csv:
                 st.download_button(
-                    label="💾 Download as CSV",
+                    label="Download as CSV",
                     data=csv_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
                     file_name=f"telemetry_{st.session_state['tele_plate']}_{st.session_state['tele_start']}_to_{st.session_state['tele_end']}.csv",
                     mime="text/csv",
@@ -404,7 +406,7 @@ options=[
                 excel_buf.seek(0)
 
                 st.download_button(
-                    label="📊 Download as Excel",
+                    label="Download as Excel",
                     data=excel_buf,
                     file_name=f"telemetry_{st.session_state['tele_plate']}_{st.session_state['tele_start']}_to_{st.session_state['tele_end']}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -412,18 +414,18 @@ options=[
                 )
 
 
-    # ─────────────────────────────────────────────────────────────────────────────
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
     # DTC
-    # ─────────────────────────────────────────────────────────────────────────────
-    elif data_type == "⚠️ DTC (Diagnostic Trouble Codes)":
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
+    elif data_type == "DTC (Diagnostic Trouble Codes)":
         selected_tz_label_dtc = st.selectbox(
             "Display Timezone", options=list(TIMEZONE_OPTIONS.keys()), index=1, key="tz_dtc"
         )
         selected_tz_dtc = TIMEZONE_OPTIONS[selected_tz_label_dtc]
 
-        if st.button("🔍 Fetch DTC Data", type="primary"):
+        if st.button("Fetch DTC Data", type="primary"):
             if not plate_number:
-                st.error("❌ Please enter a vehicle plate number.")
+                st.error("Please enter a vehicle plate number.")
                 return
 
             try:
@@ -435,7 +437,7 @@ options=[
                 dtc_agent = LinkFMSDTCAgent(linkfms_username, linkfms_password)
 
 
-                with st.spinner("🔄 Fetching DTC records..."):
+                with st.spinner("Fetching DTC records..."):
                     dtc_df = dtc_agent.fetch(
                         plate_number=plate_number,
                         start_date=start_date.isoformat(),
@@ -450,9 +452,9 @@ options=[
                     st.session_state["dtc_plate"] = plate_number
                     st.session_state["dtc_start"] = start_date
                     st.session_state["dtc_end"] = end_date
-                    st.success(f"✓ Fetched {len(dtc_df)} DTC records for {plate_number}.")
+                    st.success(f"Fetched {len(dtc_df)} DTC records for {plate_number}.")
                 else:
-                    st.warning("⚠️ No DTC records found.")
+                    st.warning("No DTC records found.")
 
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
@@ -474,7 +476,7 @@ options=[
             col_csv2, col_excel2 = st.columns(2)
             with col_csv2:
                 st.download_button(
-                    label="💾 Download DTC as CSV",
+                    label="Download DTC as CSV",
                     data=dtc_csv_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
                     file_name=f"dtc_{st.session_state['dtc_plate']}_{st.session_state['dtc_start']}_to_{st.session_state['dtc_end']}.csv",
                     mime="text/csv",
@@ -485,17 +487,17 @@ options=[
                 dtc_csv_df.to_excel(dtc_buf, index=False, engine="openpyxl")
                 dtc_buf.seek(0)
                 st.download_button(
-                    label="📊 Download DTC as Excel",
+                    label="Download DTC as Excel",
                     data=dtc_buf,
                     file_name=f"dtc_{st.session_state['dtc_plate']}_{st.session_state['dtc_start']}_to_{st.session_state['dtc_end']}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
 
-    # ─────────────────────────────────────────────────────────────────────────────
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
     # VISUALIZE
-    # ─────────────────────────────────────────────────────────────────────────────
-    elif data_type == "📊 Visualize":
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
+    elif data_type == "Visualize":
         viz = VisualizationAgent()
 
         # Keep reference(s) to generated charts so we can export them as interactive HTML.
@@ -506,16 +508,16 @@ options=[
         has_dtc = "dtc_df" in st.session_state
 
         if not has_telemetry and not has_dtc:
-            st.info("ℹ️ Fetch Telemetry or DTC data first, then come here to visualize.")
+            st.info("Fetch Telemetry or DTC data first, then come here to visualize.")
             return
 
         viz_section = st.radio(
             "Visualize",
-            options=( ["📡 Telemetry Charts"] if has_telemetry else [] ) + ( ["⚠️ DTC Charts"] if has_dtc else [] ),
+            options=(["Telemetry Charts"] if has_telemetry else []) + (["DTC Charts"] if has_dtc else []),
             horizontal=True,
         )
 
-        if viz_section == "📡 Telemetry Charts":
+        if viz_section == "Telemetry Charts":
             df = st.session_state["display_df"]
             timestamp_col = "dateProcessed" if "dateProcessed" in df.columns else df.columns[0]
             numeric_cols = df.select_dtypes(include="number").columns.tolist()
@@ -622,12 +624,21 @@ options=[
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     x_col = st.selectbox("X Axis", [timestamp_col] + all_cols, key="tele_x_col")
-                    graph_type = st.selectbox("Chart Type", ["line", "bar", "scatter", "area"], key="tele_graph_type")
+                    graph_type = st.selectbox(
+                        "Chart Type",
+                        ["line", "bar", "scatter", "area", "box", "violin", "histogram", "pie", "pareto"],
+                        key="tele_graph_type",
+                    )
                 with col2:
                     chart_title = st.text_input("Chart Title", value="Custom Chart", key="tele_chart_title")
-                    y_cols = st.multiselect("Y Axis (select one or more)", numeric_cols, default=numeric_cols[:1], key="tele_y_cols")
+                    y_cols = st.multiselect(
+                        "Y Axis (select one or more)",
+                        all_cols,
+                        default=numeric_cols[:1] if numeric_cols else all_cols[:1],
+                        key="tele_y_cols",
+                    )
                 with col3:
-                    add_chart_btn = st.button("➕ Add Chart", key="tele_add_chart_btn", use_container_width=True)
+                    add_chart_btn = st.button("Add Chart", key="tele_add_chart_btn", use_container_width=True)
 
                 colors = []
                 if y_cols:
@@ -657,7 +668,7 @@ options=[
 
                 if st.session_state.tele_custom_charts:
                     st.markdown("---")
-                    st.markdown("#### 📊 Generated Charts")
+                    st.markdown("#### Generated Charts")
                     for idx, chart_cfg in enumerate(st.session_state.tele_custom_charts):
                         col_chart, col_delete = st.columns([0.95, 0.05])
                         with col_chart:
@@ -723,12 +734,16 @@ options=[
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     dtc_x_col = st.selectbox("X Axis", ["timestamp"] + available_for_axis, key="dtc_x_col_select")
-                    dtc_graph_type = st.selectbox("Chart Type", ["line", "bar", "scatter", "area"], key="dtc_graph_type_select")
+                    dtc_graph_type = st.selectbox(
+                        "Chart Type",
+                        ["line", "bar", "scatter", "area", "box", "violin", "histogram", "pie", "pareto"],
+                        key="dtc_graph_type_select",
+                    )
                 with col2:
                     dtc_chart_title = st.text_input("Chart Title", value="Custom DTC Chart", key="dtc_chart_title_input")
                     y_axis_type = st.radio("Y Axis Type", ["Numeric Only", "All Columns"], horizontal=True, key="dtc_y_type_select")
                 with col3:
-                    dtc_add_chart_btn = st.button("➕ Add Chart", key="dtc_add_chart_btn", use_container_width=True)
+                    dtc_add_chart_btn = st.button("z. Add Chart", key="dtc_add_chart_btn", use_container_width=True)
 
                 dtc_y_options = numeric_dtc_cols if y_axis_type == "Numeric Only" else available_for_axis
                 dtc_y_cols = st.multiselect(
@@ -767,7 +782,7 @@ options=[
 
                 if st.session_state.dtc_custom_charts:
                     st.markdown("---")
-                    st.markdown("#### 📊 Generated Charts")
+                    st.markdown("#### Generated Charts")
                     for idx, chart_cfg in enumerate(st.session_state.dtc_custom_charts):
                         col_chart, col_delete = st.columns([0.95, 0.05])
                         with col_chart:
@@ -825,7 +840,7 @@ options=[
                 )
 
                 st.download_button(
-                    label="💾 Save Generated Graphs as HTML",
+                    label="Save Generated Graphs as HTML",
                     data=export_html,
                     file_name=("custom_charts_export.html"),
                     mime="text/html",
@@ -834,12 +849,12 @@ options=[
 
 
 
-    # ─────────────────────────────────────────────────────────────────────────────
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
     # KPI
-    # ─────────────────────────────────────────────────────────────────────────────
+    # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
     else:  # KPI Dashboard
         if "display_df" not in st.session_state:
-            st.info("ℹ️ Fetch telemetry data first, then come here to generate KPI dashboard.")
+            st.info("Fetch telemetry data first, then come here to generate KPI dashboard.")
             return
 
         generated_figs = []
@@ -851,14 +866,14 @@ options=[
         selected_tz = st.session_state.get("tele_tz", "UTC")
 
         st.markdown(
-            f"📊 Vehicle Performance Report\n**Plate:** {plate_number} | **Period:** {start_date} to {end_date} | **TZ:** {selected_tz}"
+            f"Vehicle Performance Report\n**Plate:** {plate_number} | **Period:** {start_date} to {end_date} | **TZ:** {selected_tz}"
         )
         st.markdown("---")
 
         kpi = KPIAgent()
         timestamp_col = "dateProcessed" if "dateProcessed" in df.columns else "timestamp"
 
-        with st.spinner("🔄 Calculating KPI metrics..."):
+        with st.spinner("Calculating KPI metrics..."):
             metrics = kpi.calculate_metrics(
                 df,
                 timestamp_col=timestamp_col,
@@ -868,17 +883,17 @@ options=[
                 odometer_col="odometer" if "odometer" in df.columns else None,
             )
 
-        st.subheader("📌 Overall KPI Metrics")
-        with st.expander("📐 View Formulas"):
+        st.subheader("Overall KPI Metrics")
+        with st.expander("View Formulas"):
             st.markdown(
                 """
                 **Formulas Used:**
                 - **Running Hours** = Time vehicle is moving (speed > 0.5 km/h)
                 - **Idle Hours** = Time engine is on but vehicle is stationary
                 - **Stopped Hours** = 24h - Running Hours (engine off)
-                - **Running %** = (Running Hours / 24h) × 100
-                - **Idle %** = (Idle Hours / 24h) × 100
-                - **Stopped %** = (Stopped Hours / 24h) × 100
+                - **Running %** = (Running Hours / 24h) - 100
+                - **Idle %** = (Idle Hours / 24h) - 100
+                - **Stopped %** = (Stopped Hours / 24h) - 100
                 - **Total Distance** = End Odometer - Start Odometer
                 - **Total Motor Hours** = End Motor Hour - Start Motor Hour
                 """
@@ -887,17 +902,17 @@ options=[
         stats = metrics.overall_stats
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("🏃 Running %", f"{stats['running_pct']:.1f}%", help="Percentage of time vehicle was running")
+            st.metric("Running %", f"{stats['running_pct']:.1f}%", help="Percentage of time vehicle was running")
         with col2:
-            st.metric("⏸️ Idle %", f"{stats['idle_pct']:.1f}%", help="Percentage of time vehicle was idle")
+            st.metric("Idle %", f"{stats['idle_pct']:.1f}%", help="Percentage of time vehicle was idle")
         with col3:
-            st.metric("⛔ Stopped %", f"{stats['stopped_pct']:.1f}%", help="Percentage of time vehicle was stopped")
+            st.metric("Stopped %", f"{stats['stopped_pct']:.1f}%", help="Percentage of time vehicle was stopped")
         with col4:
-            st.metric("📍 Total Distance", f"{stats['total_distance']:.1f} km", help="Total distance traveled")
+            st.metric("Total Distance", f"{stats['total_distance']:.1f} km", help="Total distance traveled")
 
         st.markdown("---")
 
-        st.subheader("📅 Daily Metrics & Odometer")
+        st.subheader("Daily Metrics and Odometer")
         tab1, tab2 = st.tabs(["Daily Hours & Percentages", "Daily Odometer"])
 
         with tab1:
@@ -942,7 +957,7 @@ options=[
             st.dataframe(odo_display, use_container_width=True)
 
         st.markdown("---")
-        st.subheader("📆 Weekly Metrics & Odometer")
+        st.subheader("Weekly Metrics and Odometer")
         tab3, tab4 = st.tabs(["Weekly Hours & Percentages", "Weekly Odometer"])
 
         with tab3:
@@ -984,7 +999,7 @@ options=[
                 "\">"
                 "<div style=\"font-family: 'Segoe UI', Arial, sans-serif; color:white; font-weight:800; "
                 "font-size: 28px; line-height:1.2; letter-spacing:0.2px;\">"
-                "📊 Vehicle Performance Report"
+                "Vehicle Performance Report"
                 "</div>"
                 "<div style=\"font-family: 'Segoe UI', Arial, sans-serif; color: rgba(255,255,255,0.95); "
                 "font-size: 15px; margin-top: 10px;\">"
@@ -999,7 +1014,7 @@ options=[
             html_body_with_title = html_title + html_body
 
             st.download_button(
-                label="💾 Save KPI Dashboard as Interactive HTML",
+                label="Save KPI Dashboard as Interactive HTML",
                 data=html_body_with_title,
                 file_name=report_title,
                 mime="text/html",
@@ -1007,12 +1022,16 @@ options=[
             )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
 # ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
+# "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
 if __name__ == "__main__":
     if st.session_state.authenticated:
         show_main_app()
     else:
-        render_login_page(title="TLD/XOPS VISUALIZATION TOOL")
+        render_login_page(title="🌐 TLD/XOPS VISUALIZATION TOOL")
+
+
+
+
 

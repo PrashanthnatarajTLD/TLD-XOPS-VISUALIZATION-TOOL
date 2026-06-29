@@ -326,7 +326,8 @@ class VisualizationAgent:
                      title: str = "Custom Chart") -> go.Figure:
         """
         Fully customizable chart.
-        chart_type: 'line', 'bar', 'scatter', 'area'
+        chart_type: 'line', 'bar', 'scatter', 'area', 'box', 'pie', 'pareto',
+                    'violin', 'histogram'
         colors: list of hex colors per y_col (auto-assigned if None)
         Multiple y_cols = multiple y-axes (first on left, rest on right)
         """
@@ -335,6 +336,82 @@ class VisualizationAgent:
         y_cols = [c for c in y_cols if c in df.columns]
         if not y_cols:
             return self._empty("No valid Y columns found.")
+
+        # Chart types that are inherently single-series in this builder.
+        single_series_types = {'pie', 'pareto', 'histogram'}
+        primary_y = y_cols[0]
+
+        if chart_type in single_series_types:
+            if chart_type == 'pie':
+                if pd.api.types.is_numeric_dtype(df[primary_y]) and x_col != primary_y:
+                    pie_df = df[[x_col, primary_y]].dropna()
+                    if pie_df.empty:
+                        return self._empty("No data available for pie chart.")
+                    pie_df = pie_df.groupby(x_col, as_index=False)[primary_y].sum()
+                    fig = px.pie(
+                        pie_df,
+                        names=x_col,
+                        values=primary_y,
+                        title=title,
+                        template="plotly_dark",
+                    )
+                else:
+                    counts = df[primary_y].astype(str).fillna("NA").value_counts().reset_index()
+                    counts.columns = [primary_y, 'count']
+                    fig = px.pie(
+                        counts,
+                        names=primary_y,
+                        values='count',
+                        title=title,
+                        template="plotly_dark",
+                    )
+                fig.update_layout(height=500)
+                return fig
+
+            if chart_type == 'pareto':
+                if pd.api.types.is_numeric_dtype(df[primary_y]) and x_col != primary_y:
+                    pareto_df = df[[x_col, primary_y]].dropna()
+                    if pareto_df.empty:
+                        return self._empty("No data available for pareto chart.")
+                    pareto_df = pareto_df.groupby(x_col, as_index=False)[primary_y].sum()
+                    pareto_df = pareto_df.rename(columns={x_col: 'category', primary_y: 'value'})
+                else:
+                    pareto_df = df[primary_y].astype(str).fillna("NA").value_counts().reset_index()
+                    pareto_df.columns = ['category', 'value']
+
+                pareto_df = pareto_df.sort_values('value', ascending=False).reset_index(drop=True)
+                total = pareto_df['value'].sum()
+                if total == 0:
+                    return self._empty("No non-zero values available for pareto chart.")
+                pareto_df['cum_pct'] = (pareto_df['value'].cumsum() / total) * 100
+
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                fig.add_trace(
+                    go.Bar(x=pareto_df['category'], y=pareto_df['value'], name='Value'),
+                    secondary_y=False,
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=pareto_df['category'],
+                        y=pareto_df['cum_pct'],
+                        mode='lines+markers',
+                        name='Cumulative %',
+                        line=dict(color='#ef553b'),
+                    ),
+                    secondary_y=True,
+                )
+                fig.update_yaxes(title_text='Value', secondary_y=False)
+                fig.update_yaxes(title_text='Cumulative %', range=[0, 100], secondary_y=True)
+                fig.update_layout(title=title, template="plotly_dark", height=500)
+                return fig
+
+            # histogram
+            hist_df = df[[primary_y]].dropna()
+            if hist_df.empty:
+                return self._empty("No data available for histogram.")
+            fig = px.histogram(hist_df, x=primary_y, title=title, template="plotly_dark")
+            fig.update_layout(height=500)
+            return fig
 
         multi_axis = len(y_cols) > 1
         specs = [[{"secondary_y": True}]] if multi_axis else [[{}]]
@@ -353,6 +430,16 @@ class VisualizationAgent:
                 trace = go.Scatter(x=df[x_col], y=df[col], mode='markers', name=col, marker=dict(color=color, size=5))
             elif chart_type == 'area':
                 trace = go.Scatter(x=df[x_col], y=df[col], mode='lines', fill='tozeroy', name=col, line=dict(color=color))
+            elif chart_type == 'box':
+                trace = go.Box(y=df[col], name=col, marker_color=color, boxmean=True)
+            elif chart_type == 'violin':
+                trace = go.Violin(
+                    y=df[col],
+                    name=col,
+                    line_color=color,
+                    box_visible=True,
+                    meanline_visible=True,
+                )
             else:
                 trace = go.Scatter(x=df[x_col], y=df[col], mode='lines', name=col, line=dict(color=color))
 

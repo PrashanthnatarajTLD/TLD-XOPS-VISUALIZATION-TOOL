@@ -1,0 +1,12 @@
+1. To start the server use command:
+Set-Location "C:\Users\prashanth.nataraj\Desktop\LINKFMS Telemetry analysis project"; Start-Process "http://localhost:8501"; C:/Users/prashanth.nataraj/AppData/Local/Programs/Python/Python313/python.exe -m streamlit run "telemetry-app/agents/linkfms_fetch_app.py" --server.address 0.0.0.0 --server.port 8501
+
+2. to check which ports are running currently:
+netstat -ano | findstr LISTENING  (Displays all ports which are running)
+
+3.to check for specific port:
+netstat -ano | findstr :8501
+
+
+4. To kill specific port:
+netstat -ano | findstr :8501

@@ -25,7 +25,7 @@ def render_login_page(*, title: str = "TLD/XOPS VISUALIZATION TOOL") -> None:
       - On successful login: sets authenticated + user_info and triggers st.rerun().
     """
 
-    st.title(title)
+    st.markdown(f"<h1 style='text-align: center;'>{title}</h1>", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 2, 1])
 
