@@ -12,25 +12,31 @@ import io
 import streamlit as st
 import pandas as pd
 import sys
+import time
+import threading
 from pathlib import Path
 from datetime import date, timedelta
+from time import perf_counter
 
 import plotly.io as pio
 
 # HTML export helpers (split out for customization)
 from save_html_visualize_agent import build_visualize_export_html, VisualizeExportContext
 from save_html_kpi_agent import build_kpi_export_html, KPIExportContext
+from mail_html_agent import send_html_report_email, parse_email_list
+from ollama_chat_agent import ask_ollama_fast, build_compact_context
 
 
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from linkfms_api_agent import LinkFMSAPIAgent
+from linkfms_api_agent import LinkFMSAPIAgent, FETCH_SPEED_PRESETS
 from linkfms_dtc_agent import LinkFMSDTCAgent
 from parameter_extraction_agent import ParameterExtractionAgent
 from visualization_agent import VisualizationAgent
 from kpi_agent_v2 import KPIAgent
+from tmx_kpi_agent import TMXKPIAgent
 from data_models.telemetry import TelemetryData, TelemetryParameter
 from utils.login_auth import LoginManager
 
@@ -50,6 +56,82 @@ st.set_page_config(page_title="🌐 TLD/XOPS VISUALIZATION TOOL", page_icon="T",
 # INITIALIZE SESSION STATE
 # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
 LoginManager.initialize_session()
+
+
+def _record_timing(stage_timings, stage_name: str, stage_start: float) -> float:
+    """Record a stage duration and print it to terminal logs."""
+    elapsed = perf_counter() - stage_start
+    stage_timings.append({"stage": stage_name, "seconds": round(elapsed, 3)})
+    print(f"[TIMING] {stage_name}: {elapsed:.3f}s", flush=True)
+    return perf_counter()
+
+
+def _update_live_timing_ui(
+    status_slot,
+    table_slot,
+    stage_timings,
+    current_stage: str,
+    is_complete: bool = False,
+    active_stage: str | None = None,
+    active_elapsed_seconds: float | None = None,
+) -> None:
+    """Render timing progress live in Streamlit while stages complete."""
+    rows = list(stage_timings)
+    if active_stage is not None and active_elapsed_seconds is not None:
+        rows.append({"stage": f"{active_stage} (running)", "seconds": round(active_elapsed_seconds, 3)})
+
+    timing_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["stage", "seconds"])
+    table_slot.dataframe(timing_df, use_container_width=True, hide_index=True)
+
+    if is_complete:
+        status_slot.success(f"Timing complete. Final stage: {current_stage}")
+    else:
+        if active_stage is not None and active_elapsed_seconds is not None:
+            status_slot.info(f"Running stage: {active_stage} | Elapsed: {int(active_elapsed_seconds)} sec")
+        else:
+            status_slot.info(f"Running stage: {current_stage}")
+
+
+def _run_stage_with_live_timer(stage_name, status_slot, table_slot, stage_timings, stage_fn):
+    """Run a blocking stage while updating elapsed seconds in realtime."""
+    result_holder = {"value": None, "error": None}
+
+    def _target():
+        try:
+            result_holder["value"] = stage_fn()
+        except Exception as exc:
+            result_holder["error"] = exc
+
+    thread = threading.Thread(target=_target, daemon=True)
+    stage_start = perf_counter()
+    last_second = -1
+    thread.start()
+
+    while thread.is_alive():
+        elapsed = perf_counter() - stage_start
+        elapsed_sec = int(elapsed)
+        if elapsed_sec != last_second:
+            last_second = elapsed_sec
+            _update_live_timing_ui(
+                status_slot,
+                table_slot,
+                stage_timings,
+                current_stage=stage_name,
+                active_stage=stage_name,
+                active_elapsed_seconds=elapsed,
+            )
+        time.sleep(0.1)
+
+    thread.join()
+
+    if result_holder["error"] is not None:
+        raise result_holder["error"]
+
+    elapsed = perf_counter() - stage_start
+    stage_timings.append({"stage": stage_name, "seconds": round(elapsed, 3)})
+    print(f"[TIMING] {stage_name}: {elapsed:.3f}s", flush=True)
+    _update_live_timing_ui(status_slot, table_slot, stage_timings, current_stage=stage_name)
+    return result_holder["value"]
 
 
 def show_main_app() -> None:
@@ -87,8 +169,10 @@ def show_main_app() -> None:
         "EST - USA Eastern (UTC-5)": "America/New_York",
         "CST - USA Central (UTC-6)": "America/Chicago",
         "PST - USA Pacific (UTC-8)": "America/Los_Angeles",
-        "CET - France/Europe (UTC+1)": "Europe/Paris",
+        "Paris - France (Europe/Paris, UTC+1/UTC+2 DST)": "Europe/Paris",
     }
+
+    st.caption("Paris timezone is DST-aware. India is 3h30 ahead of Paris in summer, and 4h30 ahead in winter.")
 
     st.markdown("---")
 
@@ -98,7 +182,9 @@ options=[
             "Raw Telemetry",
             "DTC (Diagnostic Trouble Codes)",
             "Visualize",
-            "KPI Dashboard",
+            "Standard KPI Dashoard",
+            "Advanced KPI Insights (TMX Style)",
+            "AI Assistant",
         ],
         horizontal=True,
     )
@@ -109,7 +195,12 @@ options=[
     if data_type == "Raw Telemetry":
         col1, col2, col3 = st.columns(3)
         with col1:
-            batch_size_days = st.number_input("Batch Size (days)", min_value=1, max_value=365, value=30)
+            fetch_speed_preset = st.selectbox(
+                "Fetch Speed Preset",
+                options=list(FETCH_SPEED_PRESETS.keys()),
+                index=list(FETCH_SPEED_PRESETS.keys()).index("normal"),
+                help="Controls page size, chunk size, pacing, cooldown, and retry behavior for telemetry fetches.",
+            )
         with col2:
             alignment_method = st.selectbox(
                 "Alignment Method",
@@ -120,59 +211,88 @@ options=[
             selected_tz_label = st.selectbox("Display Timezone", options=list(TIMEZONE_OPTIONS.keys()), index=1)
         selected_tz = TIMEZONE_OPTIONS[selected_tz_label]
 
+        preset_cfg = FETCH_SPEED_PRESETS[fetch_speed_preset]
+        st.caption(
+            f"Preset '{fetch_speed_preset}': page size {preset_cfg.page_size_telemetry:,}, chunk {preset_cfg.max_days_per_chunk} days, delay {preset_cfg.inter_request_delay_seconds:.1f}s, cooldown every {preset_cfg.cooldown_every_n_requests or 0} requests."
+        )
+
         if st.button("Fetch Telemetry Data", type="primary"):
             if not plate_number:
                 st.error("Please enter a vehicle plate number.")
                 return
 
             try:
+                total_start = perf_counter()
+                stage_timings = []
+                live_timing_status = st.empty()
+                live_timing_table = st.empty()
+                _update_live_timing_ui(
+                    live_timing_status,
+                    live_timing_table,
+                    stage_timings,
+                    current_stage="initializing",
+                )
+
                 creds = st.session_state.get("user_info") or {}
                 api_agent = LinkFMSAPIAgent(
                     creds.get("username") or creds.get("userid") or "",
                     creds.get("password") or "",
                 )
 
-
-                all_dataframes = []
-                current_start = start_date
-
-                with st.spinner("Fetching telemetry data in batches..."):
-                    while current_start <= end_date:
-                        current_end = min(current_start + timedelta(days=batch_size_days - 1), end_date)
-                        st.info(f"Fetching {plate_number}: {current_start} to {current_end}")
-                        batch = api_agent.fetch_by_date_and_vehicle(
-                            plate_number=plate_number,
-                            start_date=current_start.isoformat(),
-                            end_date=current_end.isoformat(),
-                        )
-                        if batch and not batch.dataframe.empty:
-                            all_dataframes.append(batch.dataframe)
-                        current_start = current_end + timedelta(days=1)
-
-                if not all_dataframes:
-                    st.warning("No data found.")
-                    return
-
-                combined_df = pd.concat(all_dataframes, ignore_index=True)
-                timestamp_col_name = "timestamp"
-                if timestamp_col_name in combined_df.columns:
-                    combined_df[timestamp_col_name] = pd.to_datetime(
-                        combined_df[timestamp_col_name], errors="coerce", utc=True
+                def _stage_api_fetch():
+                    return api_agent.fetch_by_date_and_vehicle(
+                        plate_number=plate_number,
+                        start_date=start_date.isoformat(),
+                        end_date=end_date.isoformat(),
+                        speed_preset=fetch_speed_preset,
                     )
-                    combined_df = combined_df.sort_values(timestamp_col_name).reset_index(drop=True)
 
-                telemetry_data = TelemetryData(
-                    dataframe=combined_df,
-                    parameters=[
-                        TelemetryParameter(name=col)
-                        for col in combined_df.columns
-                        if col != timestamp_col_name
-                    ],
-                    timestamp_column=timestamp_col_name,
-                    source_file=f"LINKFMS API - {plate_number}",
+                batch = _run_stage_with_live_timer(
+                    "api_fetch", live_timing_status, live_timing_table, stage_timings, _stage_api_fetch
                 )
 
-                with st.spinner("Extracting parameters..."):
+                if not batch or batch.dataframe.empty:
+                    st.warning("No data found.")
+                    total_elapsed = perf_counter() - total_start
+                    stage_timings.append({"stage": "total_pipeline", "seconds": round(total_elapsed, 3)})
+                    print(f"[TIMING] total_pipeline: {total_elapsed:.3f}s", flush=True)
+                    st.session_state["telemetry_timing_df"] = pd.DataFrame(stage_timings)
+                    _update_live_timing_ui(
+                        live_timing_status,
+                        live_timing_table,
+                        stage_timings,
+                        current_stage="total_pipeline",
+                        is_complete=True,
+                    )
+                    return
+
+                timestamp_col_name = "timestamp"
+
+                def _stage_prepare_dataframe():
+                    combined_df_local = batch.dataframe.copy()
+                    if timestamp_col_name in combined_df_local.columns:
+                        combined_df_local[timestamp_col_name] = pd.to_datetime(
+                            combined_df_local[timestamp_col_name], errors="coerce", utc=True
+                        )
+                        combined_df_local = combined_df_local.sort_values(timestamp_col_name).reset_index(drop=True)
+
+                    telemetry_data_local = TelemetryData(
+                        dataframe=combined_df_local,
+                        parameters=[
+                            TelemetryParameter(name=col)
+                            for col in combined_df_local.columns
+                            if col != timestamp_col_name
+                        ],
+                        timestamp_column=timestamp_col_name,
+                        source_file=f"LINKFMS API - {plate_number}",
+                    )
+                    return telemetry_data_local
+
+                telemetry_data = _run_stage_with_live_timer(
+                    "prepare_dataframe", live_timing_status, live_timing_table, stage_timings, _stage_prepare_dataframe
+                )
+
+                def _stage_parameter_extraction():
                     extraction_agent = ParameterExtractionAgent()
                     extraction_result = extraction_agent.extract_parameters(
                         telemetry_data.dataframe, source_column="telemetry_raw"
@@ -219,12 +339,18 @@ options=[
                             extracted_df[col] = extracted_df[col].replace(
                                 {"None": pd.NA, "nan": pd.NA, "NaN": pd.NA, "": pd.NA}
                             )
+                    return extracted_df
 
-                with st.spinner(f" Filling missing values ({alignment_method})..."):
-                    extracted_df = extracted_df.dropna(subset=[timestamp_col_name])
-                    extracted_df = extracted_df.sort_values(timestamp_col_name).reset_index(drop=True)
+                extracted_df = _run_stage_with_live_timer(
+                    "parameter_extraction", live_timing_status, live_timing_table, stage_timings, _stage_parameter_extraction
+                )
 
-                    non_ts_cols = [c for c in extracted_df.columns if c != timestamp_col_name]
+                def _stage_alignment_fill():
+                    local_df = extracted_df.copy()
+                    local_df = local_df.dropna(subset=[timestamp_col_name])
+                    local_df = local_df.sort_values(timestamp_col_name).reset_index(drop=True)
+
+                    non_ts_cols = [c for c in local_df.columns if c != timestamp_col_name]
                     no_fill_cols = [
                         c for c in ["EngineCodeDescription", "Source", "EngineCode"]
                         if c in non_ts_cols
@@ -234,33 +360,33 @@ options=[
                     # Track which values are actually forward/back-filled.
                     # For each column: mark True where the value was NaN in the original extracted_df,
                     # but becomes non-NaN after filling.
-                    original_is_nan = extracted_df[non_ts_cols].isna()
-                    filled_mask = pd.DataFrame(False, index=extracted_df.index, columns=non_ts_cols)
+                    original_is_nan = local_df[non_ts_cols].isna()
+                    filled_mask = pd.DataFrame(False, index=local_df.index, columns=non_ts_cols)
 
                     if alignment_method == "forward_fill":
                         if fill_cols:
-                            extracted_df[fill_cols] = extracted_df[fill_cols].ffill()
-                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
+                            local_df[fill_cols] = local_df[fill_cols].ffill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & local_df[fill_cols].notna()
                     elif alignment_method == "backward_fill":
                         if fill_cols:
-                            extracted_df[fill_cols] = extracted_df[fill_cols].bfill()
-                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
+                            local_df[fill_cols] = local_df[fill_cols].bfill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & local_df[fill_cols].notna()
                     elif alignment_method in ("interpolate", "nearest"):
-                        numeric_cols = extracted_df[fill_cols].select_dtypes(include="number").columns.tolist() if fill_cols else []
+                        numeric_cols = local_df[fill_cols].select_dtypes(include="number").columns.tolist() if fill_cols else []
                         if numeric_cols:
-                            extracted_df[numeric_cols] = extracted_df[numeric_cols].interpolate(
+                            local_df[numeric_cols] = local_df[numeric_cols].interpolate(
                                 method="linear", limit_direction="both"
                             )
                         # Remaining NaNs are handled with ffill/bfill
                         if fill_cols:
-                            extracted_df[fill_cols] = extracted_df[fill_cols].ffill().bfill()
-                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
+                            local_df[fill_cols] = local_df[fill_cols].ffill().bfill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & local_df[fill_cols].notna()
                     else:
                         if fill_cols:
-                            extracted_df[fill_cols] = extracted_df[fill_cols].ffill().bfill()
-                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & extracted_df[fill_cols].notna()
+                            local_df[fill_cols] = local_df[fill_cols].ffill().bfill()
+                            filled_mask.loc[:, fill_cols] = original_is_nan[fill_cols] & local_df[fill_cols].notna()
 
-                    display_df = extracted_df.rename(columns={"timestamp": "dateProcessed"})
+                    display_df_local = local_df.rename(columns={"timestamp": "dateProcessed"})
 
                     # Store fill masks for UI highlighting (keyed by column name).
                     fill_masks = {}
@@ -268,23 +394,47 @@ options=[
                         if col in filled_mask.columns:
                             # Align indices after rename (same as extracted_df)
                             fill_masks[col] = filled_mask[col].tolist()
-                    st.session_state['fill_masks'] = fill_masks
+                    return display_df_local, fill_masks
+
+                display_df, fill_masks = _run_stage_with_live_timer(
+                    "alignment_fill", live_timing_status, live_timing_table, stage_timings, _stage_alignment_fill
+                )
+                st.session_state['fill_masks'] = fill_masks
 
 
                 # timezone conversion for any date columns
-                date_cols = [c for c in ["date", "dateReceived", "dateProcessed"] if c in display_df.columns]
-                for col in date_cols:
-                    display_df[col] = (
-                        pd.to_datetime(display_df[col], errors="coerce", utc=True)
-                        .dt.tz_convert(selected_tz)
-                        .dt.tz_localize(None)
-                    )
+                def _stage_timezone_conversion():
+                    local_df = display_df.copy()
+                    date_cols = [c for c in ["date", "dateReceived", "dateProcessed"] if c in local_df.columns]
+                    for col in date_cols:
+                        local_df[col] = (
+                            pd.to_datetime(local_df[col], errors="coerce", utc=True)
+                            .dt.tz_convert(selected_tz)
+                            .dt.tz_localize(None)
+                        )
+                    return local_df
+
+                display_df = _run_stage_with_live_timer(
+                    "timezone_conversion", live_timing_status, live_timing_table, stage_timings, _stage_timezone_conversion
+                )
 
                 st.session_state["display_df"] = display_df
                 st.session_state["tele_plate"] = plate_number
                 st.session_state["tele_start"] = start_date
                 st.session_state["tele_end"] = end_date
                 st.session_state["tele_tz"] = selected_tz_label
+
+                total_elapsed = perf_counter() - total_start
+                stage_timings.append({"stage": "total_pipeline", "seconds": round(total_elapsed, 3)})
+                print(f"[TIMING] total_pipeline: {total_elapsed:.3f}s", flush=True)
+                st.session_state["telemetry_timing_df"] = pd.DataFrame(stage_timings)
+                _update_live_timing_ui(
+                    live_timing_status,
+                    live_timing_table,
+                    stage_timings,
+                    current_stage="total_pipeline",
+                    is_complete=True,
+                )
 
                 st.success(f"{len(display_df)} records fetched for {plate_number}. TZ: {selected_tz_label}")
 
@@ -338,6 +488,14 @@ options=[
             st.write(
                 f"**Memory Usage:** {display_df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB"
             )
+
+            timing_df = st.session_state.get("telemetry_timing_df")
+            if isinstance(timing_df, pd.DataFrame) and not timing_df.empty:
+                with st.expander("Performance timings (seconds)", expanded=True):
+                    st.dataframe(timing_df, use_container_width=True, hide_index=True)
+                    total_match = timing_df[timing_df["stage"] == "total_pipeline"]
+                    if not total_match.empty:
+                        st.caption(f"Total pipeline time: {float(total_match.iloc[-1]['seconds']):.3f}s")
 
             st.markdown("---")
             # For downloads, also preserve the filled/non-filled info by adding a column-wise mask.
@@ -852,7 +1010,7 @@ options=[
     # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
     # KPI
     # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
-    else:  # KPI Dashboard
+    elif data_type == "Standard KPI Dashoard":
         if "display_df" not in st.session_state:
             st.info("Fetch telemetry data first, then come here to generate KPI dashboard.")
             return
@@ -885,19 +1043,10 @@ options=[
 
         st.subheader("Overall KPI Metrics")
         with st.expander("View Formulas"):
-            st.markdown(
-                """
-                **Formulas Used:**
-                - **Running Hours** = Time vehicle is moving (speed > 0.5 km/h)
-                - **Idle Hours** = Time engine is on but vehicle is stationary
-                - **Stopped Hours** = 24h - Running Hours (engine off)
-                - **Running %** = (Running Hours / 24h) - 100
-                - **Idle %** = (Idle Hours / 24h) - 100
-                - **Stopped %** = (Stopped Hours / 24h) - 100
-                - **Total Distance** = End Odometer - Start Odometer
-                - **Total Motor Hours** = End Motor Hour - Start Motor Hour
-                """
-            )
+            st.markdown("**Formulas Used:**")
+            for formula_name, formula_text in metrics.formulas.items():
+                label = formula_name.replace("_", " ").title()
+                st.markdown(f"- **{label}** = {formula_text}")
 
         stats = metrics.overall_stats
         col1, col2, col3, col4 = st.columns(4)
@@ -909,6 +1058,36 @@ options=[
             st.metric("Stopped %", f"{stats['stopped_pct']:.1f}%", help="Percentage of time vehicle was stopped")
         with col4:
             st.metric("Total Distance", f"{stats['total_distance']:.1f} km", help="Total distance traveled")
+
+        col5, col6, col7, col8 = st.columns(4)
+        with col5:
+            st.metric("Running Hrs", f"{stats['total_running_hours']:.1f} h", help="Total running time")
+        with col6:
+            st.metric("Idle Hrs", f"{stats['total_idle_hours']:.1f} h", help="Total idle time")
+        with col7:
+            st.metric("Motor Hrs", f"{stats['total_motor_hours']:.1f} h", help="Total positive motor hour delta")
+        with col8:
+            st.metric("Active %", f"{stats['active_pct']:.1f}%", help="Running + idle percentage")
+
+        col9, col10, col11, col12 = st.columns(4)
+        with col9:
+            st.metric("Avg Speed", f"{stats['avg_speed']:.1f} km/h", help="Weighted average speed across all time")
+        with col10:
+            st.metric("Avg Moving Speed", f"{stats['avg_moving_speed']:.1f} km/h", help="Average speed only while running")
+        with col11:
+            st.metric("Dist / Running Hr", f"{stats['distance_per_running_hour']:.1f} km/h", help="Distance efficiency over running hours")
+        with col12:
+            st.metric("Dist / Motor Hr", f"{stats['distance_per_motor_hour']:.1f} km/h", help="Distance efficiency over motor hours")
+
+        insight_col1, insight_col2, insight_col3, insight_col4 = st.columns(4)
+        with insight_col1:
+            st.metric("Max Speed", f"{stats['max_speed']:.1f} km/h")
+        with insight_col2:
+            st.metric("Avg Daily Distance", f"{stats['avg_daily_distance']:.1f} km")
+        with insight_col3:
+            st.metric("Peak Daily Distance", f"{stats['peak_daily_distance']:.1f} km")
+        with insight_col4:
+            st.metric("Days With Data", f"{stats['days_with_data']}")
 
         st.markdown("---")
 
@@ -932,10 +1111,19 @@ options=[
                     "running_hours",
                     "idle_hours",
                     "stopped_hours",
+                    "active_hours",
                     "motor_hours",
+                    "distance_km",
                     "running_pct",
                     "idle_pct",
                     "stopped_pct",
+                    "active_pct",
+                    "avg_speed",
+                    "avg_moving_speed",
+                    "max_speed",
+                    "distance_per_running_hour",
+                    "distance_per_motor_hour",
+                    "idle_to_running_ratio",
                 ]
             ].copy()
             daily_display.columns = [
@@ -943,10 +1131,19 @@ options=[
                 "Running Hrs",
                 "Idle Hrs",
                 "Stopped Hrs",
+                "Active Hrs",
                 "Motor Hrs",
+                "Distance (km)",
                 "Running %",
                 "Idle %",
                 "Stopped %",
+                "Active %",
+                "Avg Speed",
+                "Avg Moving Speed",
+                "Max Speed",
+                "Dist / Running Hr",
+                "Dist / Motor Hr",
+                "Idle / Running Ratio",
             ]
             st.dataframe(daily_display, use_container_width=True)
 
@@ -968,6 +1165,48 @@ options=[
             fig4 = kpi.create_weekly_percentage_chart(metrics.weekly_metrics)
             generated_figs.append(fig4)
             st.plotly_chart(fig4, use_container_width=True)
+
+            weekly_display = metrics.weekly_metrics[
+                [
+                    "week",
+                    "running_hours",
+                    "idle_hours",
+                    "stopped_hours",
+                    "active_hours",
+                    "motor_hours",
+                    "distance_km",
+                    "running_pct",
+                    "idle_pct",
+                    "stopped_pct",
+                    "active_pct",
+                    "avg_speed",
+                    "avg_moving_speed",
+                    "max_speed",
+                    "distance_per_running_hour",
+                    "distance_per_motor_hour",
+                    "idle_to_running_ratio",
+                ]
+            ].copy()
+            weekly_display.columns = [
+                "Week",
+                "Running Hrs",
+                "Idle Hrs",
+                "Stopped Hrs",
+                "Active Hrs",
+                "Motor Hrs",
+                "Distance (km)",
+                "Running %",
+                "Idle %",
+                "Stopped %",
+                "Active %",
+                "Avg Speed",
+                "Avg Moving Speed",
+                "Max Speed",
+                "Dist / Running Hr",
+                "Dist / Motor Hr",
+                "Idle / Running Ratio",
+            ]
+            st.dataframe(weekly_display, use_container_width=True)
 
         with tab4:
             weekly_odo = metrics.weekly_odometer
@@ -1020,6 +1259,374 @@ options=[
                 mime="text/html",
                 use_container_width=True,
             )
+
+            st.markdown("### Send KPI HTML by Email")
+            st.caption(
+                "Recipients receive the HTML file as an attachment and can open it in any browser."
+            )
+
+            mail_col1, mail_col2 = st.columns(2)
+            with mail_col1:
+                to_input = st.text_input(
+                    "To (comma separated)",
+                    placeholder="person1@company.com, person2@company.com",
+                    key="kpi_mail_to",
+                )
+                cc_input = st.text_input(
+                    "CC (optional)",
+                    placeholder="manager@company.com",
+                    key="kpi_mail_cc",
+                )
+                from_email = st.text_input(
+                    "From Email (shown to recipient)",
+                    value="",
+                    placeholder="prashanth.nataraj@tld-maini.com",
+                    key="kpi_mail_from",
+                )
+                sender_name = st.text_input(
+                    "Sender Name",
+                    value="LINKFMS Telemetry",
+                    key="kpi_mail_sender_name",
+                )
+
+            with mail_col2:
+                smtp_host = st.text_input(
+                    "SMTP Host",
+                    value="smtp.office365.com",
+                    key="kpi_mail_smtp_host",
+                )
+                smtp_port = st.number_input(
+                    "SMTP Port",
+                    min_value=1,
+                    max_value=65535,
+                    value=587,
+                    key="kpi_mail_smtp_port",
+                )
+                smtp_username = st.text_input(
+                    "SMTP Username",
+                    value="",
+                    placeholder="Usually same as mailbox username",
+                    key="kpi_mail_user",
+                )
+                smtp_password = st.text_input(
+                    "SMTP Password",
+                    type="password",
+                    key="kpi_mail_password",
+                )
+
+            subject = st.text_input(
+                "Email Subject",
+                value=f"KPI Dashboard Report - {plate_number} ({start_date} to {end_date})",
+                key="kpi_mail_subject",
+            )
+            body_text = st.text_area(
+                "Email Body",
+                value=(
+                    f"Hello,\n\nPlease find attached the KPI dashboard HTML report for {plate_number} "
+                    f"from {start_date} to {end_date}.\n\nRegards,\n{sender_name}"
+                ),
+                key="kpi_mail_body",
+            )
+            use_tls = st.checkbox("Use STARTTLS", value=True, key="kpi_mail_tls")
+
+            if st.button("Send KPI HTML Email", type="primary", use_container_width=True):
+                to_emails = parse_email_list(to_input)
+                cc_emails = parse_email_list(cc_input)
+
+                required_values = [
+                    smtp_host,
+                    smtp_username,
+                    smtp_password,
+                    from_email,
+                    subject,
+                ]
+                if not to_emails:
+                    st.error("Please provide at least one valid recipient email in To.")
+                elif not all(required_values):
+                    st.error(
+                        "Please fill required fields: SMTP host, SMTP username, SMTP password, From email, and Subject."
+                    )
+                else:
+                    with st.spinner("Sending report email..."):
+                        send_result = send_html_report_email(
+                            smtp_host=smtp_host,
+                            smtp_port=int(smtp_port),
+                            smtp_username=smtp_username,
+                            smtp_password=smtp_password,
+                            from_email=from_email,
+                            sender_name=sender_name,
+                            to_emails=to_emails,
+                            cc_emails=cc_emails,
+                            subject=subject,
+                            body_text=body_text,
+                            html_file_name=report_title,
+                            html_content=html_body_with_title,
+                            use_tls=use_tls,
+                        )
+
+                    if send_result.success:
+                        st.success(send_result.message)
+                    else:
+                        st.error(send_result.message)
+
+                    st.info(f"Sender display note: {send_result.sender_identity_hint}")
+
+    elif data_type == "Advanced KPI Insights (TMX Style)":
+        if "display_df" not in st.session_state:
+            st.info("Fetch telemetry data first, then open Advanced KPI Insights.")
+            return
+
+        df = st.session_state["display_df"]
+        plate_number = st.session_state.get("tele_plate", "Unknown")
+        start_date = st.session_state.get("tele_start", "N/A")
+        end_date = st.session_state.get("tele_end", "N/A")
+        selected_tz = st.session_state.get("tele_tz", "UTC")
+
+        st.markdown(
+            f"Advanced KPI Insights (TMX Style)\n**Plate:** {plate_number} | **Period:** {start_date} to {end_date} | **TZ:** {selected_tz}"
+        )
+        st.markdown("---")
+
+        kpi = TMXKPIAgent()
+        timestamp_col = "dateProcessed" if "dateProcessed" in df.columns else "timestamp"
+        ts_min = pd.to_datetime(df[timestamp_col], errors="coerce").min() if timestamp_col in df.columns else None
+        ts_max = pd.to_datetime(df[timestamp_col], errors="coerce").max() if timestamp_col in df.columns else None
+        advanced_cache_key = (
+            str(plate_number),
+            str(start_date),
+            str(end_date),
+            str(selected_tz),
+            int(len(df)),
+            str(ts_min),
+            str(ts_max),
+        )
+
+        cached_advanced = st.session_state.get("advanced_kpi_cached_payload")
+        cached_key = st.session_state.get("advanced_kpi_cached_key")
+
+        if cached_advanced is not None and cached_key == advanced_cache_key:
+            advanced = cached_advanced["advanced"]
+            generated_figs = cached_advanced["figs"]
+        else:
+            advanced = kpi.build_advanced_kpi_bundle(df, timestamp_col=timestamp_col)
+            generated_figs = []
+
+            fig_state_pct = kpi.create_engine_state_pct_chart(advanced["state_day"], advanced["state_week"])
+            generated_figs.append(fig_state_pct)
+
+            fig_charge = kpi.create_charge_cycles_chart(
+                advanced["cycle_detail"], advanced["cycle_day"], advanced["cycle_week"]
+            )
+            generated_figs.append(fig_charge)
+
+            fig_usage_bar = kpi.create_usage_hours_bar_chart(advanced["day_rollup"], advanced["week_rollup"])
+            generated_figs.append(fig_usage_bar)
+
+            fig_odo_bar = kpi.create_odometer_bar_chart(advanced["day_rollup"], advanced["week_rollup"])
+            generated_figs.append(fig_odo_bar)
+
+            fig_speed_bar = kpi.create_speed_bar_chart(advanced["day_rollup"], advanced["week_rollup"])
+            generated_figs.append(fig_speed_bar)
+
+            fig_idle_bar = kpi.create_idle_hours_bar_chart(advanced["day_rollup"], advanced["week_rollup"])
+            generated_figs.append(fig_idle_bar)
+
+            fig_deadman = kpi.create_deadman_switch_chart(advanced["deadman_df"])
+            generated_figs.append(fig_deadman)
+
+            fig_soc = kpi.create_soc_chart(advanced["soc_df"])
+            generated_figs.append(fig_soc)
+
+            fig_current = kpi.create_battery_current_chart(advanced["battery_current_df"])
+            generated_figs.append(fig_current)
+
+            fig_cell = kpi.create_cell_voltage_chart(advanced["cell_voltage_df"])
+            generated_figs.append(fig_cell)
+
+            fig_bat_v = kpi.create_battery_voltage_chart(advanced["battery_voltage_df"])
+            generated_figs.append(fig_bat_v)
+
+            fig_raw = kpi.create_raw_telemetry_line_chart(advanced["raw_df"])
+            generated_figs.append(fig_raw)
+
+            st.session_state["advanced_kpi_cached_key"] = advanced_cache_key
+            st.session_state["advanced_kpi_cached_payload"] = {
+                "advanced": advanced,
+                "figs": generated_figs,
+            }
+
+        adv_kpis = advanced["kpis"]
+
+        adv_col1, adv_col2, adv_col3, adv_col4 = st.columns(4)
+        with adv_col1:
+            st.metric("Avg Charge Cycles / Day", f"{adv_kpis['avg_charge_cycles_day']:.2f}")
+        with adv_col2:
+            st.metric("Avg Charge Cycles / Week", f"{adv_kpis['avg_charge_cycles_week']:.2f}")
+        with adv_col3:
+            st.metric("Avg Running % / Day", f"{adv_kpis['avg_running_pct_day']:.1f}%")
+        with adv_col4:
+            st.metric("Avg Idle % / Day", f"{adv_kpis['avg_idle_pct_day']:.1f}%")
+
+        adv_col5, adv_col6, adv_col7, adv_col8 = st.columns(4)
+        with adv_col5:
+            st.metric("Odometer / Day", f"{adv_kpis['avg_odometer_day_km']:.2f} km")
+        with adv_col6:
+            st.metric("Odometer / Week", f"{adv_kpis['avg_odometer_week_km']:.2f} km")
+        with adv_col7:
+            st.metric("Motor Hour / Day", f"{adv_kpis['avg_motor_hour_day']:.2f} h")
+        with adv_col8:
+            st.metric("Motor Hour / Week", f"{adv_kpis['avg_motor_hour_week']:.2f} h")
+
+        adv_col9, adv_col10, adv_col11, adv_col12 = st.columns(4)
+        with adv_col9:
+            st.metric("Avg Speed / Day", f"{adv_kpis['avg_speed_day']:.2f}")
+        with adv_col10:
+            st.metric("Avg Speed / Week", f"{adv_kpis['avg_speed_week']:.2f}")
+        with adv_col11:
+            st.metric("Idle Hours / Day", f"{adv_kpis['avg_idle_hours_day']:.2f} h")
+        with adv_col12:
+            st.metric("Idle Hours / Week", f"{adv_kpis['avg_idle_hours_week']:.2f} h")
+
+        for fig in generated_figs:
+            st.plotly_chart(fig, use_container_width=True)
+
+        if generated_figs:
+            report_title = f"advanced_kpi_dashboard_{plate_number}_{start_date}_to_{end_date}.html"
+            html_body = "".join(
+                [
+                    pio.to_html(g, full_html=False, include_plotlyjs=("cdn" if i == 0 else False))
+                    for i, g in enumerate(generated_figs)
+                ]
+            )
+
+            adv_cards = [
+                ("Avg Charge Cycles / Day", f"{adv_kpis['avg_charge_cycles_day']:.2f}"),
+                ("Avg Charge Cycles / Week", f"{adv_kpis['avg_charge_cycles_week']:.2f}"),
+                ("Avg Running % / Day", f"{adv_kpis['avg_running_pct_day']:.1f}%"),
+                ("Avg Idle % / Day", f"{adv_kpis['avg_idle_pct_day']:.1f}%"),
+                ("Odometer / Day", f"{adv_kpis['avg_odometer_day_km']:.2f} km"),
+                ("Odometer / Week", f"{adv_kpis['avg_odometer_week_km']:.2f} km"),
+                ("Motor Hour / Day", f"{adv_kpis['avg_motor_hour_day']:.2f} h"),
+                ("Motor Hour / Week", f"{adv_kpis['avg_motor_hour_week']:.2f} h"),
+                ("Avg Speed / Day", f"{adv_kpis['avg_speed_day']:.2f}"),
+                ("Avg Speed / Week", f"{adv_kpis['avg_speed_week']:.2f}"),
+                ("Idle Hours / Day", f"{adv_kpis['avg_idle_hours_day']:.2f} h"),
+                ("Idle Hours / Week", f"{adv_kpis['avg_idle_hours_week']:.2f} h"),
+            ]
+            adv_cards_html = "".join(
+                [
+                    (
+                        "<div style='background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;box-shadow:0 2px 8px rgba(0,0,0,0.05);'>"
+                        f"<div style='font-size:12px;color:#6b7280;margin-bottom:6px;'>{label}</div>"
+                        f"<div style='font-size:22px;font-weight:700;color:#0f172a;'>{value}</div>"
+                        "</div>"
+                    )
+                    for label, value in adv_cards
+                ]
+            )
+
+            html_with_cards = (
+                "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'/>"
+                "<meta name='viewport' content='width=device-width, initial-scale=1'/>"
+                "<title>Advanced KPI Dashboard</title></head>"
+                "<body style='margin:0;padding:16px;background:#f8fafc;color:#0f172a;font-family:Segoe UI,Arial,sans-serif;'>"
+                "<div style='width:100%;text-align:center;margin:6px 0 18px 0;padding:18px;background:linear-gradient(135deg,#0EA5E9 0%,#7C3AED 55%,#F97316 100%);border-radius:14px;color:white;'>"
+                "<div style='font-size:26px;font-weight:800;'>Advanced KPI Insights (TMX Style)</div>"
+                f"<div style='font-size:14px;margin-top:8px;'><b>Plate:</b> {plate_number} &nbsp; <b>Period:</b> {start_date} to {end_date} &nbsp; <b>TZ:</b> {selected_tz}</div>"
+                "</div>"
+                "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:18px;'>"
+                f"{adv_cards_html}"
+                "</div>"
+                "<div style='display:grid;gap:16px;'>"
+                f"{html_body}"
+                "</div></body></html>"
+            )
+
+            st.download_button(
+                label="Save Advanced KPI Dashboard as Interactive HTML",
+                data=html_with_cards,
+                file_name=report_title,
+                mime="text/html",
+                use_container_width=True,
+            )
+
+    else:  # AI Assistant
+        if "display_df" not in st.session_state:
+            st.info("Fetch telemetry data first, then use AI Assistant.")
+            return
+
+        ai_df = st.session_state["display_df"]
+        ai_plate = st.session_state.get("tele_plate", plate_number or "Unknown")
+        ai_start = str(st.session_state.get("tele_start", start_date))
+        ai_end = str(st.session_state.get("tele_end", end_date))
+        ai_tz = st.session_state.get("tele_tz", "UTC")
+
+        st.subheader("AI Assistant (Fast Local Model)")
+        st.caption("Optimized for short and fast answers using local free models via Ollama.")
+
+        col_ai_1, col_ai_2, col_ai_3 = st.columns(3)
+        with col_ai_1:
+            ollama_model = st.selectbox(
+                "Model",
+                options=["qwen2.5:3b", "llama3.2:1b", "llama3.2:3b"],
+                index=0,
+            )
+        with col_ai_2:
+            ai_timeout = st.slider("Timeout (seconds)", min_value=5, max_value=30, value=12)
+        with col_ai_3:
+            ai_max_tokens = st.slider("Max Response Tokens", min_value=60, max_value=260, value=140, step=20)
+
+        ollama_host = st.text_input(
+            "Ollama Host URL",
+            value="http://localhost:11434",
+            help="If Ollama runs on another machine, provide its URL (example: http://10.11.192.94:11434).",
+        )
+
+        sample_size = st.slider("Context Sample Rows", min_value=4, max_value=20, value=10)
+
+        sample_df = ai_df.head(sample_size).copy()
+        sample_records = sample_df.where(sample_df.notna(), None).to_dict(orient="records")
+        context_json = build_compact_context(
+            plate_number=ai_plate,
+            start_date=ai_start,
+            end_date=ai_end,
+            timezone_label=ai_tz,
+            total_rows=len(ai_df),
+            columns=list(ai_df.columns),
+            sample_rows=sample_records,
+        )
+
+        with st.expander("AI Context Preview"):
+            st.code(context_json, language="json")
+
+        default_question = (
+            "Give a quick summary of vehicle behavior and mention any obvious risk indicators."
+        )
+        question = st.text_area("Ask a question", value=default_question, height=120)
+
+        if st.button("Ask AI", type="primary", use_container_width=True):
+            if not question.strip():
+                st.error("Please enter a question.")
+            else:
+                with st.spinner("Generating fast response..."):
+                    ai_result = ask_ollama_fast(
+                        question=question.strip(),
+                        context_json=context_json,
+                        model=ollama_model,
+                        host=ollama_host.strip(),
+                        timeout_seconds=int(ai_timeout),
+                        max_tokens=int(ai_max_tokens),
+                    )
+
+                if ai_result.success:
+                    st.success("AI response ready")
+                    st.caption(f"Model latency: {ai_result.latency_ms} ms")
+                    st.write(ai_result.answer)
+                else:
+                    st.error(ai_result.error or "AI request failed.")
+                    st.info(
+                        "Quick setup: install Ollama, run it, then pull a model (example: ollama pull qwen2.5:3b)."
+                    )
 
 
 # "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?

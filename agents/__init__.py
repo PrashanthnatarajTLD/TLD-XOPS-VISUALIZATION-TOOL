@@ -10,7 +10,11 @@ from .timestamp_alignment_agent import TimestampAlignmentAgent
 from .visualization_agent import VisualizationAgent
 from .optimize_agent import OptimizeAgent
 from .linkfms_api_agent import LinkFMSAPIAgent
+from .linkfms_fetch_optimization_agent import LinkFMSFetchOptimizationAgent, FetchSpeedConfig, FETCH_SPEED_PRESETS
 from .parameter_extraction_agent import ParameterExtractionAgent
+from .tmx_kpi_agent import TMXKPIAgent
+from .mail_html_agent import send_html_report_email, parse_email_list, EmailSendResult
+from .ollama_chat_agent import ask_ollama_fast, build_compact_context, AIChatResult
 
 __all__ = [
     'DataFetchAgent',
@@ -23,5 +27,15 @@ __all__ = [
     'VisualizationAgent',
     'OptimizeAgent',
     'LinkFMSAPIAgent',
+    'LinkFMSFetchOptimizationAgent',
+    'FetchSpeedConfig',
+    'FETCH_SPEED_PRESETS',
     'ParameterExtractionAgent',
+    'TMXKPIAgent',
+    'send_html_report_email',
+    'parse_email_list',
+    'EmailSendResult',
+    'ask_ollama_fast',
+    'build_compact_context',
+    'AIChatResult',
 ]
