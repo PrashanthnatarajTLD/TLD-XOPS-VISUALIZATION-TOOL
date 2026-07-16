@@ -9,6 +9,7 @@ NOTE: The app name/file name remains `linkfms_fetch_app.py` as requested.
 """
 
 import io
+import os
 import streamlit as st
 import pandas as pd
 import sys
@@ -33,6 +34,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from linkfms_api_agent import LinkFMSAPIAgent, FETCH_SPEED_PRESETS
 from linkfms_dtc_agent import LinkFMSDTCAgent
+from sql_agent import SQLAgent, SQLConfig
+from cache_fetch_agent import CacheFetchAgent
+from data_sync_agent import DataSyncAgent
 from parameter_extraction_agent import ParameterExtractionAgent
 from visualization_agent import VisualizationAgent
 from kpi_agent_v2 import KPIAgent
@@ -134,6 +138,124 @@ def _run_stage_with_live_timer(stage_name, status_slot, table_slot, stage_timing
     return result_holder["value"]
 
 
+def _build_default_sql_agent() -> SQLAgent:
+    """Create SQL agent from environment defaults without exposing DB controls in UI."""
+    return SQLAgent(
+        SQLConfig(
+            host=os.getenv("PGHOST", "localhost"),
+            port=int(os.getenv("PGPORT", "5432")),
+            database=os.getenv("PGDATABASE", "telemetry"),
+            user=os.getenv("PGUSER", "postgres"),
+            password=os.getenv("PGPASSWORD", ""),
+            sslmode=os.getenv("PGSSLMODE", "prefer"),
+        )
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def _start_server_live_sync_default() -> dict:
+    """Start a shared live sync worker once per server process using env-based credentials."""
+    plate_env = os.getenv("LINKFMS_SYNC_PLATE", "T118059").strip() or "T118059"
+    poll_seconds = int(os.getenv("LINKFMS_SYNC_POLL_SECONDS", "30"))
+
+    username = os.getenv("LINKFMS_SYNC_USERNAME", "")
+    password = os.getenv("LINKFMS_SYNC_PASSWORD", "")
+    if not username or not password:
+        return {
+            "running": False,
+            "plate": plate_env,
+            "reason": "Missing LINKFMS_SYNC_USERNAME or LINKFMS_SYNC_PASSWORD",
+            "agent": None,
+        }
+
+    try:
+        sql_agent = _build_default_sql_agent()
+        sql_agent.initialize()
+
+        api_agent = LinkFMSAPIAgent(username, password)
+        sync_plates = [plate_env]
+        plates_provider = None
+        if plate_env.lower() in {"all", "everything", "*", "all_active", "all_active_vehicles"}:
+            def _discover_active_plates() -> list[str]:
+                today = date.today()
+                discovered_plates = api_agent.get_available_vehicles(
+                    start_date=(today - timedelta(days=1)).isoformat(),
+                    end_date=today.isoformat(),
+                )
+                return [str(p).strip() for p in (discovered_plates or []) if str(p).strip()]
+
+            plates_provider = _discover_active_plates
+            discovered_now = plates_provider()
+            if discovered_now:
+                sync_plates = discovered_now
+
+        sync_agent = DataSyncAgent(
+            api_agent,
+            sql_agent,
+            poll_seconds=poll_seconds,
+            speed_preset="fastest",
+            initial_lookback_days=1,
+            plates_provider=plates_provider,
+        )
+        sync_agent.start(sync_plates)
+
+        display_plate = plate_env
+        if len(sync_plates) > 1:
+            display_plate = f"all_active_vehicles ({len(sync_plates)})"
+
+        return {
+            "running": True,
+            "plate": display_plate,
+            "reason": "",
+            "agent": sync_agent,
+        }
+    except Exception as exc:
+        return {
+            "running": False,
+            "plate": plate_env,
+            "reason": str(exc),
+            "agent": None,
+        }
+
+
+SERVER_LIVE_SYNC = _start_server_live_sync_default()
+
+
+@st.fragment(run_every=2)
+def _render_live_sync_status() -> None:
+    """Render live sync status with periodic UI refresh."""
+    sync_agent = SERVER_LIVE_SYNC.get("agent")
+    sync_state = getattr(sync_agent, "state", None)
+    sync_label = SERVER_LIVE_SYNC.get("plate", "T118059")
+    current_plate = getattr(sync_state, "current_plate", None)
+
+    if current_plate:
+        st.caption(f"syncing.. {sync_label} | fetching now: {current_plate}")
+    else:
+        st.caption(f"syncing.. {sync_label}")
+
+    active_plates = getattr(sync_state, "active_plates", None) or []
+    if active_plates:
+        with st.popover(f"Active sync plates ({len(active_plates)})"):
+            current_plate = getattr(sync_state, "current_plate", None)
+            for plate in active_plates:
+                is_current = bool(current_plate and plate == current_plate)
+                if is_current:
+                    st.markdown(
+                        f"<div style='padding:6px 10px;margin:4px 0;border-radius:8px;background:#0f172a;color:#ffffff;font-weight:700;border:1px solid #38bdf8;'>"
+                        f"{plate} <span style='font-size:12px;opacity:0.9;'>(fetching now)</span>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f"<div style='padding:6px 10px;margin:4px 0;border-radius:8px;background:#f8fafc;color:#0f172a;border:1px solid #e5e7eb;'>"
+                        f"{plate}"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+
+
 def show_main_app() -> None:
     """Main telemetry/DTC/KPI/visualization UI (rendered only after login)."""
 
@@ -152,6 +274,7 @@ def show_main_app() -> None:
     st.markdown(
         f"**Logged in as:** {st.session_state.user_info['name']} ({st.session_state.user_info['role']} 👤)"
     )
+    _render_live_sync_status()
     st.markdown("---")
 
     st.subheader("Fetch Parameters")
@@ -198,7 +321,7 @@ options=[
             fetch_speed_preset = st.selectbox(
                 "Fetch Speed Preset",
                 options=list(FETCH_SPEED_PRESETS.keys()),
-                index=list(FETCH_SPEED_PRESETS.keys()).index("normal"),
+                index=list(FETCH_SPEED_PRESETS.keys()).index("fastest"),
                 help="Controls page size, chunk size, pacing, cooldown, and retry behavior for telemetry fetches.",
             )
         with col2:
@@ -215,6 +338,12 @@ options=[
         st.caption(
             f"Preset '{fetch_speed_preset}': page size {preset_cfg.page_size_telemetry:,}, chunk {preset_cfg.max_days_per_chunk} days, delay {preset_cfg.inter_request_delay_seconds:.1f}s, cooldown every {preset_cfg.cooldown_every_n_requests or 0} requests."
         )
+
+        tracked_plate = plate_number.strip() if plate_number else ""
+        if tracked_plate:
+            st.caption(f"Live data fetch is ON | plate: {tracked_plate}")
+        else:
+            st.caption("Live data fetch is ON | plate: (enter plate number)")
 
         if st.button("Fetch Telemetry Data", type="primary"):
             if not plate_number:
@@ -239,8 +368,12 @@ options=[
                     creds.get("password") or "",
                 )
 
+                sql_agent = _build_default_sql_agent()
+                sql_agent.initialize()
+                cache_agent = CacheFetchAgent(sql_agent=sql_agent, api_agent=api_agent)
+
                 def _stage_api_fetch():
-                    return api_agent.fetch_by_date_and_vehicle(
+                    return cache_agent.fetch_db_first(
                         plate_number=plate_number,
                         start_date=start_date.isoformat(),
                         end_date=end_date.isoformat(),
@@ -249,6 +382,10 @@ options=[
 
                 batch = _run_stage_with_live_timer(
                     "api_fetch", live_timing_status, live_timing_table, stage_timings, _stage_api_fetch
+                )
+
+                st.caption(
+                    f"Data source: {batch.source} | DB rows: {batch.cached_rows} | Newly fetched rows: {batch.fetched_rows}"
                 )
 
                 if not batch or batch.dataframe.empty:
