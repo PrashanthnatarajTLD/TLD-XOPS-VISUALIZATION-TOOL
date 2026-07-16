@@ -32,34 +32,45 @@ class CacheFetchAgent:
         end_date: str,
         speed_preset: str = "normal",
     ) -> CacheFetchResult:
-        cached_df = self.sql_agent.fetch_by_range(plate_number=plate_number, start_ts=start_date, end_ts=end_date)
-        if cached_df is not None and not cached_df.empty:
-            return CacheFetchResult(
-                dataframe=cached_df,
-                source="postgres",
-                cached_rows=len(cached_df),
-                fetched_rows=0,
-            )
+        self.sql_agent.mark_plate_status(plate_number=plate_number, status="fetching")
+        try:
+            cached_df = self.sql_agent.fetch_by_range(plate_number=plate_number, start_ts=start_date, end_ts=end_date)
+            if cached_df is not None and not cached_df.empty:
+                self.sql_agent.refresh_plate_status_from_cache(plate_number=plate_number, status="completed")
+                return CacheFetchResult(
+                    dataframe=cached_df,
+                    source="postgres",
+                    cached_rows=len(cached_df),
+                    fetched_rows=0,
+                )
 
-        batch = self.api_agent.fetch_by_date_and_vehicle(
-            plate_number=plate_number,
-            start_date=start_date,
-            end_date=end_date,
-            speed_preset=speed_preset,
-        )
-        fetched_df = batch.dataframe if batch is not None else pd.DataFrame()
-
-        inserted = 0
-        if fetched_df is not None and not fetched_df.empty:
-            inserted = self.sql_agent.upsert_dataframe(
-                fetched_df,
+            batch = self.api_agent.fetch_by_date_and_vehicle(
                 plate_number=plate_number,
-                timestamp_col="timestamp" if "timestamp" in fetched_df.columns else fetched_df.columns[0],
+                start_date=start_date,
+                end_date=end_date,
+                speed_preset=speed_preset,
             )
+            fetched_df = batch.dataframe if batch is not None else pd.DataFrame()
 
-        return CacheFetchResult(
-            dataframe=fetched_df,
-            source="linkfms_graphql",
-            cached_rows=0,
-            fetched_rows=inserted,
-        )
+            inserted = 0
+            if fetched_df is not None and not fetched_df.empty:
+                inserted = self.sql_agent.upsert_dataframe(
+                    fetched_df,
+                    plate_number=plate_number,
+                    timestamp_col="timestamp" if "timestamp" in fetched_df.columns else fetched_df.columns[0],
+                )
+
+            self.sql_agent.refresh_plate_status_from_cache(plate_number=plate_number, status="completed")
+            return CacheFetchResult(
+                dataframe=fetched_df,
+                source="linkfms_graphql",
+                cached_rows=0,
+                fetched_rows=inserted,
+            )
+        except Exception as exc:
+            self.sql_agent.mark_plate_status(
+                plate_number=plate_number,
+                status="not_completed",
+                last_error=str(exc),
+            )
+            raise

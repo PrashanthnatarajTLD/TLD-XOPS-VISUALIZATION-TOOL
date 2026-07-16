@@ -67,6 +67,8 @@ class DataSyncAgent:
         start_date = start_dt.date().isoformat()
         end_date = now.date().isoformat()
 
+        self.sql_agent.mark_plate_status(plate_number=plate, status="fetching")
+
         batch = self.api_agent.fetch_by_date_and_vehicle(
             plate_number=plate,
             start_date=start_date,
@@ -76,6 +78,7 @@ class DataSyncAgent:
         df = batch.dataframe if batch is not None else pd.DataFrame()
         if df is None or df.empty:
             self._plate_watermarks[plate] = now
+            self.sql_agent.refresh_plate_status_from_cache(plate_number=plate, status="completed")
             return 0
 
         timestamp_col = "timestamp" if "timestamp" in df.columns else df.columns[0]
@@ -83,9 +86,11 @@ class DataSyncAgent:
         df = df[df[timestamp_col] >= start_dt]
         if df.empty:
             self._plate_watermarks[plate] = now
+            self.sql_agent.refresh_plate_status_from_cache(plate_number=plate, status="completed")
             return 0
 
         inserted = self.sql_agent.upsert_dataframe(df, plate_number=plate, timestamp_col=timestamp_col)
+        self.sql_agent.refresh_plate_status_from_cache(plate_number=plate, status="completed")
         latest_ts = pd.to_datetime(df[timestamp_col], errors="coerce", utc=True).max()
         if pd.notna(latest_ts):
             self._plate_watermarks[plate] = latest_ts.to_pydatetime()
@@ -107,7 +112,15 @@ class DataSyncAgent:
                     if not plate:
                         continue
                     self.state.current_plate = plate
-                    inserted_cycle += self._fetch_incremental(plate)
+                    try:
+                        inserted_cycle += self._fetch_incremental(plate)
+                    except Exception as exc:
+                        self.sql_agent.mark_plate_status(
+                            plate_number=plate,
+                            status="not_completed",
+                            last_error=str(exc),
+                        )
+                        self.state.last_error = str(exc)
 
                 self.state.total_inserted += inserted_cycle
                 self.state.last_sync_at = datetime.now(timezone.utc).isoformat()

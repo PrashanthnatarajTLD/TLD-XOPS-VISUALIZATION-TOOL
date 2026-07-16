@@ -32,6 +32,7 @@ class SQLAgent:
     """Agent for PostgreSQL operations used by telemetry cache and sync."""
 
     TABLE_NAME = "telemetry_cache"
+    STATUS_TABLE_NAME = "telemetry_plate_status"
 
     def __init__(self, config: SQLConfig):
         if psycopg2 is None:
@@ -101,7 +102,81 @@ class SQLAgent:
                 );
                 """
             )
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.STATUS_TABLE_NAME} (
+                    plate_number TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    from_ts TIMESTAMPTZ NULL,
+                    to_ts TIMESTAMPTZ NULL,
+                    total_rows BIGINT NOT NULL DEFAULT 0,
+                    last_error TEXT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
         conn.commit()
+
+    def mark_plate_status(
+        self,
+        plate_number: str,
+        status: Optional[str],
+        from_ts: Optional[datetime] = None,
+        to_ts: Optional[datetime] = None,
+        total_rows: Optional[int] = None,
+        last_error: Optional[str] = None,
+    ) -> None:
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {self.STATUS_TABLE_NAME}
+                    (plate_number, status, from_ts, to_ts, total_rows, last_error, updated_at)
+                VALUES
+                    (%s, COALESCE(%s, 'fetching'), %s, %s, COALESCE(%s, 0), %s, NOW())
+                ON CONFLICT (plate_number)
+                DO UPDATE SET
+                    status = COALESCE(EXCLUDED.status, {self.STATUS_TABLE_NAME}.status),
+                    from_ts = CASE
+                        WHEN EXCLUDED.from_ts IS NULL THEN {self.STATUS_TABLE_NAME}.from_ts
+                        WHEN {self.STATUS_TABLE_NAME}.from_ts IS NULL THEN EXCLUDED.from_ts
+                        ELSE LEAST({self.STATUS_TABLE_NAME}.from_ts, EXCLUDED.from_ts)
+                    END,
+                    to_ts = CASE
+                        WHEN EXCLUDED.to_ts IS NULL THEN {self.STATUS_TABLE_NAME}.to_ts
+                        WHEN {self.STATUS_TABLE_NAME}.to_ts IS NULL THEN EXCLUDED.to_ts
+                        ELSE GREATEST({self.STATUS_TABLE_NAME}.to_ts, EXCLUDED.to_ts)
+                    END,
+                    total_rows = COALESCE(EXCLUDED.total_rows, {self.STATUS_TABLE_NAME}.total_rows),
+                    last_error = EXCLUDED.last_error,
+                    updated_at = NOW()
+                """,
+                (plate_number, status, from_ts, to_ts, total_rows, last_error),
+            )
+        conn.commit()
+
+    def refresh_plate_status_from_cache(self, plate_number: str, status: Optional[str] = None) -> None:
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT MIN(event_ts), MAX(event_ts), COUNT(*)
+                FROM {self.TABLE_NAME}
+                WHERE plate_number = %s
+                """,
+                (plate_number,),
+            )
+            row = cur.fetchone()
+
+        min_ts, max_ts, total_rows = row if row else (None, None, 0)
+        self.mark_plate_status(
+            plate_number=plate_number,
+            status=status,
+            from_ts=min_ts,
+            to_ts=max_ts,
+            total_rows=int(total_rows or 0),
+            last_error=None,
+        )
 
     def _to_json_safe(self, value: Any) -> Any:
         """Convert pandas/python objects into JSON-serializable primitives."""
