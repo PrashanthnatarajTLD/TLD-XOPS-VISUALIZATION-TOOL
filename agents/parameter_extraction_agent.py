@@ -101,6 +101,20 @@ class ParameterExtractionAgent:
             "min": 0,
             "max": 100
         },
+        "Veh Fuel Guage Percentage(%)": {
+            "aliases": [
+                "Veh Fuel Guage Percentage(%)",
+                "Veh Fuel Guage Percentage",
+                "Veh Fuel Gauge Percentage(%)",
+                "Veh Fuel Gauge Percentage",
+                "Fuel Gauge Percentage",
+                "Fuel Guage Percentage",
+            ],
+            "unit": "%",
+            "data_type": "float",
+            "min": 0,
+            "max": 100
+        },
         "Vehicle ID": {
             "aliases": ["Vehicle ID", "Device_ID", "DeviceID"],
             "unit": "",

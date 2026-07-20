@@ -37,6 +37,7 @@ from linkfms_dtc_agent import LinkFMSDTCAgent
 from sql_agent import SQLAgent, SQLConfig
 from cache_fetch_agent import CacheFetchAgent
 from data_sync_agent import DataSyncAgent
+from sync_window_agent import SyncWindowAgent
 from parameter_extraction_agent import ParameterExtractionAgent
 from visualization_agent import VisualizationAgent
 from kpi_agent_v2 import KPIAgent
@@ -196,6 +197,7 @@ def _start_server_live_sync_default() -> dict:
             speed_preset="fastest",
             initial_lookback_days=1,
             plates_provider=plates_provider,
+            window_agent=SyncWindowAgent.from_env(),
         )
         sync_agent.start(sync_plates)
 

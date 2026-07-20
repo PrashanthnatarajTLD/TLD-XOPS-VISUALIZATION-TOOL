@@ -1,6 +1,7 @@
 from .sql_agent import SQLAgent, SQLConfig
 from .cache_fetch_agent import CacheFetchAgent, CacheFetchResult
 from .data_sync_agent import DataSyncAgent, SyncState
+from .sync_window_agent import SyncWindowAgent, SyncWindowConfig
 
 """Package initialization for agents."""
 

@@ -12,6 +12,7 @@ import pandas as pd
 
 from linkfms_api_agent import LinkFMSAPIAgent
 from sql_agent import SQLAgent
+from sync_window_agent import SyncWindowAgent, SyncWindowConfig
 
 
 @dataclass
@@ -35,6 +36,7 @@ class DataSyncAgent:
         speed_preset: str = "fastest",
         initial_lookback_days: int = 1,
         plates_provider: Optional[Callable[[], Iterable[str]]] = None,
+        window_agent: Optional[SyncWindowAgent] = None,
     ):
         self.api_agent = api_agent
         self.sql_agent = sql_agent
@@ -42,6 +44,9 @@ class DataSyncAgent:
         self.speed_preset = speed_preset
         self.initial_lookback_days = max(1, int(initial_lookback_days))
         self.plates_provider = plates_provider
+        self.window_agent = window_agent or SyncWindowAgent(
+            SyncWindowConfig(initial_lookback_days=self.initial_lookback_days)
+        )
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.state = SyncState()
@@ -63,9 +68,10 @@ class DataSyncAgent:
 
     def _fetch_incremental(self, plate: str) -> int:
         now = datetime.now(timezone.utc)
-        start_dt = self._plate_watermarks.get(plate, now - timedelta(days=self.initial_lookback_days))
-        start_date = start_dt.date().isoformat()
-        end_date = now.date().isoformat()
+        start_dt, end_dt, start_date, end_date = self.window_agent.resolve_window(
+            now_utc=now,
+            plate_watermark=self._plate_watermarks.get(plate),
+        )
 
         self.sql_agent.mark_plate_status(plate_number=plate, status="fetching")
 
@@ -83,7 +89,7 @@ class DataSyncAgent:
 
         timestamp_col = "timestamp" if "timestamp" in df.columns else df.columns[0]
         df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", utc=True)
-        df = df[df[timestamp_col] >= start_dt]
+        df = df[(df[timestamp_col] >= start_dt) & (df[timestamp_col] <= end_dt)]
         if df.empty:
             self._plate_watermarks[plate] = now
             self.sql_agent.refresh_plate_status_from_cache(plate_number=plate, status="completed")
